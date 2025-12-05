@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 車載系統運作流程圖 (Final Fix)</title>
+    <!-- 使用最新的 Mermaid 版本 -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: "Microsoft JhengHei", Arial, sans-serif;
+            background-color: #f4f7f6;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h2 { color: #333; margin-bottom: 20px; }
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 100%;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>ESP32 MQTT 車載系統邏輯流程圖</h2>
+    
+    <div class="chart-container">
+        <div class="mermaid">
+        flowchart TD
+            %% 定義樣式
+            classDef default fill:#fff,stroke:#333,stroke-width:1px;
+            classDef init fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+            classDef loop fill:#fff8e1,stroke:#fbc02d,stroke-width:2px;
+            classDef mqtt fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+            classDef hard fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+            classDef action fill:#ffebee,stroke:#c62828,stroke-width:2px;
+
+            %% 系統初始化
+            subgraph SetupPhase ["系統初始化 (Setup)"]
+                Start(("系統啟動")):::init
+                InitIO["初始化 GPIO"]:::init
+                WifiSleep["設定 WiFi.setSleep(true)"]:::init
+                ConnWifi["連接 Wi-Fi"]:::init
+                ConnMQTT["連接 MQTT Broker"]:::init
+                SubCmd["訂閱 owntracks/mt/cmd"]:::init
+                
+                Start --> InitIO --> WifiSleep --> ConnWifi --> ConnMQTT --> SubCmd
+            end
+
+            %% 主循環
+            subgraph MainLoop ["主循環 (Loop)"]
+                LoopStart{"Loop 開始"}:::loop
+                
+                %% MQTT 區塊
+                CheckMQTT{"MQTT 連線?"}:::mqtt
+                Reconn["執行 Reconnect"]:::mqtt
+                MQTTRun["client.loop()"]:::mqtt
+                
+                %% 硬體檢查
+                CheckPins["checkPinStates"]:::hard
+                
+                %% ACC 邏輯
+                ACCChange{"ACC 狀態變化?"}:::hard
+                AccOn["回報: 發動"]:::action
+                AccOff["回報: 熄火"]:::action
+                
+                %% 開門邏輯
+                CondUnlock{"條件: 藍牙+人體+ACC關"}:::hard
+                DoUnlock["執行 unlockDoor"]:::action
+                
+                %% 鎖門邏輯
+                CondLock{"條件: 藍牙離+已開+ACC關"}:::hard
+                WaitLock["等待 5 秒"]:::hard
+                CheckBlue{"藍牙仍離開?"}:::hard
+                DoLock["執行 lockDoor"]:::action
+                
+                LoopEnd["Delay 10ms"]:::loop
+            end
+            
+            %% MQTT Callback
+            subgraph Callback ["接收指令 (Callback)"]
+                MsgIn[/"收到 MQTT 指令"/]:::mqtt
+                Parse{"解析內容"}:::mqtt
+                ActBoot["觸發發動 (Boot)"]:::action
+                ActLock["觸發鎖門 (Lock)"]:::action
+                ActUnlock["觸發開門 (Unlock)"]:::action
+            end
+
+            %% 流程連接
+            SubCmd --> LoopStart
+            LoopStart --> CheckMQTT
+            
+            CheckMQTT -- "否" --> Reconn
+            Reconn --> MQTTRun
+            CheckMQTT -- "是" --> MQTTRun
+            
+            MQTTRun --> CheckPins
+            CheckPins --> ACCChange
+            
+            ACCChange -- "變 ON" --> AccOn
+            ACCChange -- "變 OFF" --> AccOff
+            ACCChange -- "無" --> CondUnlock
+            
+            AccOn --> CondUnlock
+            AccOff --> CondUnlock
+            
+            CondUnlock -- "是" --> DoUnlock
+            CondUnlock -- "否" --> CondLock
+            DoUnlock --> CondLock
+            
+            CondLock -- "是" --> WaitLock
+            WaitLock --> CheckBlue
+            CheckBlue -- "是" --> DoLock
+            CheckBlue -- "否" --> LoopEnd
+            
+            CondLock -- "否" --> LoopEnd
+            DoLock --> LoopEnd
+            
+            LoopEnd --> LoopStart
+
+            %% Callback 連接
+            MQTTRun -.-> MsgIn
+            MsgIn --> Parse
+            Parse -- "boot" --> ActBoot
+            Parse -- "lock" --> ActLock
+            Parse -- "unlock" --> ActUnlock
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({ startOnLoad: true });
+    </script>
+</body>
+</html>

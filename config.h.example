@@ -1,0 +1,30 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ====== MQTT 伺服器設定 ======
+// 根據您的 MQTT Broker 設定修改以下參數
+#define MQTT_HOST "220.XXX.XXX.XXX"    // MQTT 伺服器地址
+#define MQTT_PORT 8883                // MQTT 伺服器埠號（預設 1883，如使用 SSL 通常為 8883）
+#define MQTT_USER "XXX"              // MQTT 使用者名稱
+#define MQTT_PASS "XX"                // MQTT 密碼
+
+// ====== OwnTracks/Command 設定 ======
+// 根據您的 OwnTracks 設定修改以下參數
+#define USER_ID "mt"                   // OwnTracks 使用者 ID
+#define DEVICE_ID "cmd"                // OwnTracks 設備 ID
+// 訂閱頻道: owntracks/{USER_ID}/{DEVICE_ID}
+// 例如: owntracks/mt/cmd
+
+// ====== Wi-Fi 設定 ======
+// 根據您的 Wi-Fi 網絡修改以下參數
+#define WIFI_SSID "XXXX"         // Wi-Fi SSID
+#define WIFI_PASSWORD "XXXX"     // Wi-Fi 密碼
+
+// ====== 上報狀態 URL 設定 ======
+// 系統狀態變化時會發送 GET 請求到以下 URL，請自行替換，或取消
+#define URL_CAR_BOOT "http://www.XXX.XXX/XXX" // 汽車發動
+#define URL_CAR_SHUTDOWN "http://www.XXX.XXX/XXX" // 汽車關閉
+#define URL_LOCK_DOOR "http://www.XXX.XXX/XXX" // 鎖門
+#define URL_OPEN_DOOR "http://www.XXX.XXX/XXX" // 開門
+
+#endif // CONFIG_H
