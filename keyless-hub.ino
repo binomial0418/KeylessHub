@@ -34,6 +34,8 @@ void callback(char *topic, byte *payload, unsigned int length);
 void triggerBoot();
 void unlockDoor();
 void lockDoor();
+void closeWindow(); // 關窗 
+void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
 bool checkOpenDoor();
@@ -115,7 +117,7 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     triggerBoot();
     carBootSts = 1;
-    SendCarPowerMsg(1);
+    // SendCarPowerMsg(1);
   }
   else if (msg.indexOf("lock") != -1 && msg.indexOf("unlock") == -1)
   {
@@ -133,6 +135,15 @@ void checkPinStates()
   int currentAcc = digitalRead(checkAccPin);
   int currentBlue = digitalRead(checkBluePin);
   int currentHuman = digitalRead(checkHumanPin);
+  //藍牙連上時，電池通電
+  if (currentBlue == HIGH)
+  {
+    digitalWrite(R1_PIN, HIGH);
+  }
+  else
+  {
+    digitalWrite(R1_PIN, LOW);
+  }
 
   // --- 1. 偵測 ACC 狀態變化 ---
   if (currentAcc != lastAccState)
@@ -152,7 +163,7 @@ void checkPinStates()
         // ACC 從 OFF 變 ON
         Serial.println("汽車發動 (ACC ON)");
         carBootSts = 1;
-        SendCarPowerMsg(1);
+        // SendCarPowerMsg(1);
       }
       lastAccState = currentAcc;
     }
@@ -290,6 +301,8 @@ void reconnect()
 
 void triggerBoot()
 {
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
   Serial.println("引擎啟動");
   digitalWrite(POWER_PIN, HIGH);
   delay(100);
@@ -305,6 +318,8 @@ void triggerBoot()
 
 void unlockDoor()
 {
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
   Serial.println("open door..");
   preAct = 1;
   digitalWrite(POWER_PIN, HIGH);
@@ -319,7 +334,9 @@ void unlockDoor()
 
 void lockDoor()
 {
-  if (digitalRead(checkAccPin) == HIGH || digitalRead(checkBluePin) == HIGH)
+  // if (digitalRead(checkAccPin) == HIGH || digitalRead(checkBluePin) == HIGH)
+  //   return;
+  if (digitalRead(checkAccPin) == HIGH)
     return;
   Serial.println("lock door");
   preAct = 0;
@@ -333,19 +350,70 @@ void lockDoor()
   SendCarPowerMsg(2);
 }
 
+void closeWindow() // 關窗
+{
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
+  Serial.println("close window");
+  preAct = 0;
+  //按一下鎖門 放開後再按鎖門三秒
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);
+  digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
+  delay(100);
+  digitalWrite(POWER_PIN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
+  delay(3000);
+  digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(200);
+  digitalWrite(POWER_PIN, LOW);
+  SendCarPowerMsg(4);
+}
+
+void OpenWindow() // 開窗
+{
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
+  Serial.println("open window");
+  preAct = 0;
+  // 按一下開門 放開後再按開門2秒
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, HIGH);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, HIGH);
+  delay(2000);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(POWER_PIN, LOW);
+  SendCarPowerMsg(5);
+}
+
 // 保留原 HTTP 發送功能 (只負責上報狀態，不負責接收命令)
 void SendCarPowerMsg(int sts)
 {
   String url = "";  // 初始化為空字串
   
-  if (sts == 1)
-    url = URL_CAR_BOOT;
-  else if (sts == 0)
+  // if (sts == 1)
+  //   // url = URL_CAR_BOOT;
+  //   url = "";
+  if (sts == 0)
     url = URL_CAR_SHUTDOWN;
   else if (sts == 2)
     url = URL_LOCK_DOOR;
   else if (sts == 3)
     url = URL_OPEN_DOOR;
+  else if (sts == 4)
+    url = URL_CLOSE_WINDOW;
+  else if (sts == 5)
+    url = URL_OPEN_WINDOW;
   else
     return;  // 無效的狀態值，直接返回
 
