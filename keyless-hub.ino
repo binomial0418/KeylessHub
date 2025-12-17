@@ -34,6 +34,8 @@ void callback(char *topic, byte *payload, unsigned int length);
 void triggerBoot();
 void unlockDoor();
 void lockDoor();
+void closeWindow(); // 關窗 
+void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
 bool checkOpenDoor();
@@ -339,6 +341,52 @@ void lockDoor()
   SendCarPowerMsg(2);
 }
 
+void closeWindow() // 關窗
+{
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
+  Serial.println("close window");
+  preAct = 0;
+  //按一下鎖門 放開後再按鎖門三秒
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);
+  digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
+  delay(100);
+  digitalWrite(POWER_PIN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
+  delay(3000);
+  digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(200);
+  digitalWrite(POWER_PIN, LOW);
+  SendCarPowerMsg(4);
+}
+
+void OpenWindow() // 開窗
+{
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
+  Serial.println("open window");
+  preAct = 0;
+  // 按一下開門 放開後再按開門2秒
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, HIGH);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(RELAY_PIN_OPEN, HIGH);
+  delay(2000);
+  digitalWrite(RELAY_PIN_OPEN, LOW);
+  delay(200);
+  digitalWrite(POWER_PIN, LOW);
+  SendCarPowerMsg(5);
+}
+
 // 保留原 HTTP 發送功能 (只負責上報狀態，不負責接收命令)
 void SendCarPowerMsg(int sts)
 {
@@ -353,6 +401,10 @@ void SendCarPowerMsg(int sts)
     url = URL_LOCK_DOOR;
   else if (sts == 3)
     url = URL_OPEN_DOOR;
+  else if (sts == 4)
+    url = URL_CLOSE_WINDOW;
+  else if (sts == 5)
+    url = URL_OPEN_WINDOW;
   else
     return;  // 無效的狀態值，直接返回
 
