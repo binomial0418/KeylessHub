@@ -115,7 +115,7 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     triggerBoot();
     carBootSts = 1;
-    SendCarPowerMsg(1);
+    // SendCarPowerMsg(1);
   }
   else if (msg.indexOf("lock") != -1 && msg.indexOf("unlock") == -1)
   {
@@ -152,7 +152,7 @@ void checkPinStates()
         // ACC 從 OFF 變 ON
         Serial.println("汽車發動 (ACC ON)");
         carBootSts = 1;
-        SendCarPowerMsg(1);
+        // SendCarPowerMsg(1);
       }
       lastAccState = currentAcc;
     }
@@ -290,6 +290,8 @@ void reconnect()
 
 void triggerBoot()
 {
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
   Serial.println("引擎啟動");
   digitalWrite(POWER_PIN, HIGH);
   delay(100);
@@ -305,6 +307,8 @@ void triggerBoot()
 
 void unlockDoor()
 {
+  if (digitalRead(checkAccPin) == HIGH)
+    return;
   Serial.println("open door..");
   preAct = 1;
   digitalWrite(POWER_PIN, HIGH);
@@ -319,7 +323,9 @@ void unlockDoor()
 
 void lockDoor()
 {
-  if (digitalRead(checkAccPin) == HIGH || digitalRead(checkBluePin) == HIGH)
+  // if (digitalRead(checkAccPin) == HIGH || digitalRead(checkBluePin) == HIGH)
+  //   return;
+  if (digitalRead(checkAccPin) == HIGH)
     return;
   Serial.println("lock door");
   preAct = 0;
@@ -338,9 +344,10 @@ void SendCarPowerMsg(int sts)
 {
   String url = "";  // 初始化為空字串
   
-  if (sts == 1)
-    url = URL_CAR_BOOT;
-  else if (sts == 0)
+  // if (sts == 1)
+  //   // url = URL_CAR_BOOT;
+  //   url = "";
+  if (sts == 0)
     url = URL_CAR_SHUTDOWN;
   else if (sts == 2)
     url = URL_LOCK_DOOR;
