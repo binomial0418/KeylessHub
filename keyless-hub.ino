@@ -135,6 +135,15 @@ void checkPinStates()
   int currentAcc = digitalRead(checkAccPin);
   int currentBlue = digitalRead(checkBluePin);
   int currentHuman = digitalRead(checkHumanPin);
+  //藍牙連上時，電池通電
+  if (currentBlue == HIGH)
+  {
+    digitalWrite(R1_PIN, HIGH);
+  }
+  else
+  {
+    digitalWrite(R1_PIN, LOW);
+  }
 
   // --- 1. 偵測 ACC 狀態變化 ---
   if (currentAcc != lastAccState)
