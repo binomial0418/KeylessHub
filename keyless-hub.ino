@@ -92,7 +92,8 @@ void loop()
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
-
+  Serial.print("POWER_PIN state: ");
+  Serial.println(digitalRead(POWER_PIN));
   // 這裡的 delay 雖然短，但在 Modem Sleep 模式下，
   // 只要 CPU 空閒，WiFi 模組就會自動尋找機會關閉射頻省電。
   delay(10);
@@ -138,6 +139,14 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     key_link = 0;
     Serial.println("key_link set to 0");
+  }
+  else if (msg.indexOf("window_open") != -1)
+  {
+    OpenWindow();
+  }
+  else if (msg.indexOf("window_close") != -1)
+  {
+    closeWindow();
   }
 }
 
@@ -394,12 +403,10 @@ void closeWindow() // 關窗
   digitalWrite(RELAY_PIN_LOCK, LOW);
   delay(200);
   digitalWrite(RELAY_PIN_LOCK, HIGH);
-  delay(100);
-  digitalWrite(POWER_PIN, LOW);
-  delay(200);
-  digitalWrite(RELAY_PIN_LOCK, HIGH);
-  delay(3000);
+  delay(1000);
   digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(5000);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(4);
@@ -419,12 +426,10 @@ void OpenWindow() // 開窗
   digitalWrite(RELAY_PIN_OPEN, LOW);
   delay(200);
   digitalWrite(RELAY_PIN_OPEN, HIGH);
-  delay(200);
+  delay(1000);
   digitalWrite(RELAY_PIN_OPEN, LOW);
-  delay(200);
+  delay(3000);
   digitalWrite(RELAY_PIN_OPEN, HIGH);
-  delay(2000);
-  digitalWrite(RELAY_PIN_OPEN, LOW);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(5);
