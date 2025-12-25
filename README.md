@@ -6,6 +6,8 @@
 
 此專案 Keyless Hub（keyless-hub）為基於 ESP32 的智能車載控制系統，透過 MQTT 協議實現遠程車門解鎖/上鎖、發動控制，同時支援本地藍牙和傳感器檢測。系統採用 Modem Sleep 模式以降低功耗。
 
+起因：原本汽車已經可以使用遙控鑰匙遠端發動，但只侷限於鑰匙訊號打的到汽車的地方，這樣有點失去遠端發車的美意(夏天先吹冷氣降溫)。因此本專案藉著esp32來遠端操作晶片鑰匙這樣來達到 『真 遠端發車』，如此就能涼涼的上車。之後就一路擴展功能，加入了車輛數據顯示，油耗計算，文件相關等功能，最後變成了手機鑰匙。
+
 ## 主要功能
 
 ### 核心功能
@@ -13,31 +15,36 @@
   - `boot`：遠程發動引擎
   - `lock`：遠程鎖門
   - `unlock`：遠程開門
-
+  - `window_close`：遠程關車窗
+  - `window_open`：遠程開車窗
+  - `key_on`：啟用鑰匙連結，實現真正免帶鑰匙
+  - `key_off`：停用鑰匙連結
+  
 - **本地智能感測**：
   - ACC 狀態監測（發動/熄火檢測）
   - 藍牙連接狀態檢測
   - 人體/敲擊傳感器檢測
 
 - **自動化邏輯**：
-  - 藍牙連接 + 人體靠近時自動開門
-  - 藍牙斷開時 5 秒後自動鎖門
-  - ACC 狀態變化自動上報
+  - **自動開門**：藍牙連接 + 人體靠近（GPIO 33 觸發）時自動開門。
+  - **自動鎖門**：藍牙斷開時，延遲 5 秒後自動鎖門。
+  - **鑰匙電源控制**：藍牙連接且 `key_link` 啟用時，自動開啟鑰匙電源（POWER_PIN）。
+  - **電池通電**：藍牙連接時，自動開啟備用電源（R1_PIN）。
 
-- **省電模式**：WiFi Modem Sleep + MQTT KeepAlive 機制
+- **省電模式**：WiFi Modem Sleep + MQTT KeepAlive 機制，降低待機功耗。
 
 ## 硬體配置
 
 | 功能 | GPIO 腳位 | 說明 |
 |------|---------|------|
-| 藍牙偵測 | GPIO 34 | 手機藍牙連接狀態 |
-| ACC 偵測 | GPIO 35 | 汽車點火狀態 |
-| 人體偵測 | GPIO 33 | 人體/敲擊傳感器 |
+| 藍牙偵測 | GPIO 34 | 手機藍牙連接狀態 (High: 已連接) |
+| ACC 偵測 | GPIO 35 | 汽車點火狀態 (High: 發動中) |
+| 人體偵測 | GPIO 33 | 人體/敲擊傳感器 (High: 觸發) |
 | 門鎖繼電器 | GPIO 5 | 控制車門上鎖 |
 | 發車繼電器 | GPIO 4 | 控制引擎啟動 |
 | 開門繼電器 | GPIO 15 | 控制車門解鎖 |
-| 鑰匙電源 | GPIO 26 | 電源控制 |
-| 備用 | GPIO 27 | 預留接口 |
+| 鑰匙電源 | GPIO 26 | 控制晶片鑰匙電源 (POWER_PIN) |
+| 備用電源 | GPIO 27 | 藍牙連線時通電 (R1_PIN) |
 
 ## 軟體架構
 
@@ -48,24 +55,26 @@
 - **MQTT 配置**：伺服器地址、埠號、帳號密碼
 - **OwnTracks 配置**：使用者 ID、設備 ID
 - **Wi-Fi 配置**：SSID 和密碼
-- **上報 URL**：四個狀態上報端點
+- **上報 URL**：包含發動、熄火、鎖門、開門、關窗、開窗等狀態上報端點
 
-#### `car_cmd_v9.ino` - 主程式
+#### `keyless-hub.ino` - 主程式
 包含以下主要函式：
 
 | 函式 | 說明 |
 |------|------|
-| `setup()` | 系統初始化，GPIO 配置、WiFi 連接、MQTT 訂閱 |
+| `setup()` | 系統初始化，GPIO 配置、WiFi 連接、MQTT 訂閱、啟用 Modem Sleep |
 | `loop()` | 主循環，MQTT 連線維護、GPIO 狀態檢查 |
-| `callback()` | MQTT 訊息接收處理 |
-| `checkPinStates()` | GPIO 狀態檢查與邏輯處理 |
-| `checkOpenDoor()` | 開門條件驗證（3 秒內確認） |
-| `setup_wifi()` | WiFi 連接與 Modem Sleep 啟用 |
-| `reconnect()` | MQTT 斷線重連機制 |
-| `triggerBoot()` | 執行發動流程 |
+| `callback()` | MQTT 訊息接收處理，解析 `boot`, `lock`, `unlock`, `key_on/off`, `window_open/close` |
+| `checkPinStates()` | GPIO 狀態檢查與邏輯處理（ACC 變化、藍牙狀態、鑰匙電源控制） |
+| `checkOpenDoor()` | 開門條件驗證（3 秒內確認人體感應） |
+| `setup_wifi()` | WiFi 連接與 Modem Sleep 啟用 (`WiFi.setSleep(true)`) |
+| `reconnect()` | MQTT 斷線重連機制，包含 WiFi 狀態檢查 |
+| `triggerBoot()` | 執行發動流程（包含電源切換與繼電器控制） |
 | `unlockDoor()` | 執行開門流程 |
 | `lockDoor()` | 執行鎖門流程 |
-| `SendCarPowerMsg()` | 上報狀態至伺服器 |
+| `closeWindow()` | 執行關窗流程（模擬長按鎖門） |
+| `OpenWindow()` | 執行開窗流程（模擬長按開門） |
+| `SendCarPowerMsg()` | 透過 HTTP GET 上報狀態至伺服器 |
 
 ## 程式運作流程
 
@@ -85,6 +94,8 @@
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │ 2. GPIO 狀態檢查 (checkPinStates)                     │   │
 │  │    • ACC 變化檢測 → 上報狀態                            │   │
+│  │    • 藍牙狀態 → 控制 R1_PIN (電池通電)                  │   │
+│  │    • 藍牙 + key_link → 控制 POWER_PIN (鑰匙電源)        │   │
 │  │    • 開門邏輯：藍牙 + 人體靠近                           │   │
 │  │    • 鎖門邏輯：藍牙斷開後 5 秒                           │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -99,9 +110,12 @@
          ↙ 非同步 ↙
 ┌────────────────────────────────────────────────────────────┐
 │              接收 MQTT 指令 (Callback)                      │
-│  • <act>boot</act>   → 執行發動                             │
-│  • <act>lock</act>   → 執行鎖門                             │
-│  • <act>unlock</act> → 執行開門                             │
+│  • boot         → 執行發動                                  │
+│  • lock         → 執行鎖門                                  │
+│  • unlock       → 執行開門                                  │
+│  • key_on/off   → 切換鑰匙連結狀態                          │
+│  • window_open  → 執行開窗                                  │
+│  • window_close → 執行關窗                                  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -149,6 +163,8 @@
 #define URL_CAR_SHUTDOWN "http://..."  // 汽車關閉
 #define URL_LOCK_DOOR "http://..."     // 鎖門
 #define URL_OPEN_DOOR "http://..."     // 開門
+#define URL_CLOSE_WINDOW "http://..."  // 關窗
+#define URL_OPEN_WINDOW "http://..."   // 開窗
 ```
 
 
@@ -205,7 +221,7 @@ arduino-cli lib list
 arduino-cli compile --fqbn esp32:esp32:esp32 .
 
 # 或指定完整路徑
-arduino-cli compile --fqbn esp32:esp32:esp32 /path/to/car_cmd_v9
+arduino-cli compile --fqbn esp32:esp32:esp32 /path/to/keyless-hub
 ```
 
 其中 `--fqbn esp32:esp32:esp32` 表示使用 ESP32 Dev Module 開發板。
@@ -220,14 +236,14 @@ arduino-cli compile --fqbn esp32:esp32:esp32 /path/to/car_cmd_v9
 2. **上傳程式碼到 ESP32**
    ```bash
    # 使用發現的串列埠上傳
-   arduino-cli upload -p /dev/cu.usbserial-110  --fqbn esp32:esp32:esp32:UploadSpeed=460800 car_cmd.ino
+   arduino-cli upload -p /dev/cu.usbserial-110  --fqbn esp32:esp32:esp32:UploadSpeed=460800 keyless-hub.ino
    ```
 
 ### 完整工作流範例
 
 ```bash
 # 1. 進入專案目錄
-cd ~/Arduino/car_cmd_v9
+cd ~/Arduino/keyless-hub
 
 # 2. 確認設定檔已建立
 cp config.h.example config.h
@@ -272,15 +288,21 @@ arduino-cli monitor -p /dev/cu.usbserial-14120 -c baudrate=115200
 - 若 MQTT 連線失敗，5 秒後重試
 
 ### GPIO 狀態檢查
-- **ACC 監測**：檢測汽車點火狀態變化
-- **去抖動**：ACC 變化後延遲 50ms 再確認，防止誤觸發
-- **開門邏輯**：需同時滿足藍牙連接、ACC 關閉、人體靠近（3 秒內）
-- **鎖門邏輯**：藍牙斷開後等待 5 秒，再次確認藍牙離開後執行
+- **ACC 監測**：檢測汽車點火狀態變化，並自動上報至伺服器。
+- **去抖動**：ACC 變化後延遲 50ms 再確認，防止誤觸發。
+- **藍牙連動**：
+  - 當藍牙連接時，`R1_PIN` (GPIO 27) 會通電（電池通電）。
+  - 當藍牙連接且 `key_link` 狀態為 1 時，`POWER_PIN` (GPIO 26) 會通電（鑰匙電源）。
+- **開門邏輯**：需同時滿足藍牙連接、ACC 關閉、人體靠近（GPIO 33 在 3 秒內觸發）。
+- **鎖門邏輯**：藍牙斷開後等待 5 秒，再次確認藍牙離開後執行鎖門動作。
 
 ### 繼電器控制
-- 所有繼電器高電位為關閉，低電位為啟動
-- 每個動作完成後恢復初始狀態
-- 發動流程：點火 → 鎖→解鎖 → 啟動馬達 → 停止 → 熄火
+- 所有繼電器高電位為關閉，低電位為啟動。
+- 每個動作完成後恢復初始狀態。
+- **發動流程**：開啟鑰匙電源 → 鎖門脈衝 → 啟動馬達 (3秒) → 關閉鑰匙電源。
+- **窗戶控制**：
+  - **關窗**：模擬「按一下鎖門」後「長按鎖門 5 秒」。
+  - **開窗**：模擬「按一下開門」後「長按開門 3 秒」。
 
 ## 故障排查
 
@@ -290,6 +312,7 @@ arduino-cli monitor -p /dev/cu.usbserial-14120 -c baudrate=115200
 | 無法連接 MQTT | 帳號密碼錯誤或伺服器離線 | 驗證 MQTT 帳號密碼和伺服器地址 |
 | 收不到指令 | 未訂閱正確的頻道 | 檢查 OwnTracks 使用者 ID 和設備 ID |
 | 繼電器無反應 | GPIO 連接問題 | 檢查硬體接線和 GPIO 定義 |
+| 鑰匙電源不通 | 藍牙未連或 `key_link` 未開啟 | 確認藍牙狀態，並發送 `key_on` 指令 |
 | 功耗過高 | Modem Sleep 未啟用 | 確認 `WiFi.setSleep(true)` 已執行 |
 
 ## 日誌輸出
@@ -311,7 +334,7 @@ Attempting MQTT connection...connected
 - **最後更新**：2025年12月
 - **相關文件**：
    - `config.h` - 系統設定
-   - `1.html` - 流程圖視覺化
+   - `flow.html` - 流程圖視覺化
    - 建議 Git 倉庫名稱：`keyless-hub`
 
 ## 版本歷史

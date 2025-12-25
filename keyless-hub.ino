@@ -22,6 +22,8 @@ const char *topic_cmd = "owntracks/" USER_ID "/" DEVICE_ID;
 int preAct = 0;
 int carBootSts = 0;
 int lastAccState = -1; // 用來偵測 ACC 狀態變化的變數
+int key_link = 0;      // MQTT 控制連動
+bool is_acting = false; // 是否正在執行動作
 
 // MQTT 物件
 WiFiClient espClient;
@@ -90,7 +92,8 @@ void loop()
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
-
+  Serial.print("POWER_PIN state: ");
+  Serial.println(digitalRead(POWER_PIN));
   // 這裡的 delay 雖然短，但在 Modem Sleep 模式下，
   // 只要 CPU 空閒，WiFi 模組就會自動尋找機會關閉射頻省電。
   delay(10);
@@ -127,6 +130,24 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     unlockDoor();
   }
+  else if (msg.indexOf("key_on") != -1)
+  {
+    key_link = 1;
+    Serial.println("key_link set to 1");
+  }
+  else if (msg.indexOf("key_off") != -1)
+  {
+    key_link = 0;
+    Serial.println("key_link set to 0");
+  }
+  else if (msg.indexOf("window_open") != -1)
+  {
+    OpenWindow();
+  }
+  else if (msg.indexOf("window_close") != -1)
+  {
+    closeWindow();
+  }
 }
 
 // 綜合狀態檢查函式 (在 loop 中執行)
@@ -143,6 +164,19 @@ void checkPinStates()
   else
   {
     digitalWrite(R1_PIN, LOW);
+  }
+
+  // --- [新增] Power Pin 控制邏輯 ---
+  if (!is_acting)
+  {
+    if (currentBlue == HIGH && key_link == 1)
+    {
+      digitalWrite(POWER_PIN, HIGH);
+    }
+    else
+    {
+      digitalWrite(POWER_PIN, LOW);
+    }
   }
 
   // --- 1. 偵測 ACC 狀態變化 ---
@@ -303,6 +337,7 @@ void triggerBoot()
 {
   if (digitalRead(checkAccPin) == HIGH)
     return;
+  is_acting = true;
   Serial.println("引擎啟動");
   digitalWrite(POWER_PIN, HIGH);
   delay(100);
@@ -314,12 +349,14 @@ void triggerBoot()
   delay(3000);
   digitalWrite(RELAY_PIN_BOOT, HIGH);
   digitalWrite(POWER_PIN, LOW);
+  is_acting = false;
 }
 
 void unlockDoor()
 {
   if (digitalRead(checkAccPin) == HIGH)
     return;
+  is_acting = true;
   Serial.println("open door..");
   preAct = 1;
   digitalWrite(POWER_PIN, HIGH);
@@ -330,6 +367,7 @@ void unlockDoor()
   delay(100);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(3);
+  is_acting = false;
 }
 
 void lockDoor()
@@ -338,6 +376,7 @@ void lockDoor()
   //   return;
   if (digitalRead(checkAccPin) == HIGH)
     return;
+  is_acting = true;
   Serial.println("lock door");
   preAct = 0;
   digitalWrite(POWER_PIN, HIGH);
@@ -348,12 +387,14 @@ void lockDoor()
   delay(100);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(2);
+  is_acting = false;
 }
 
 void closeWindow() // 關窗
 {
   if (digitalRead(checkAccPin) == HIGH)
     return;
+  is_acting = true;
   Serial.println("close window");
   preAct = 0;
   //按一下鎖門 放開後再按鎖門三秒
@@ -362,21 +403,21 @@ void closeWindow() // 關窗
   digitalWrite(RELAY_PIN_LOCK, LOW);
   delay(200);
   digitalWrite(RELAY_PIN_LOCK, HIGH);
-  delay(100);
-  digitalWrite(POWER_PIN, LOW);
-  delay(200);
-  digitalWrite(RELAY_PIN_LOCK, HIGH);
-  delay(3000);
+  delay(1000);
   digitalWrite(RELAY_PIN_LOCK, LOW);
+  delay(5000);
+  digitalWrite(RELAY_PIN_LOCK, HIGH);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(4);
+  is_acting = false;
 }
 
 void OpenWindow() // 開窗
 {
   if (digitalRead(checkAccPin) == HIGH)
     return;
+  is_acting = true;
   Serial.println("open window");
   preAct = 0;
   // 按一下開門 放開後再按開門2秒
@@ -385,15 +426,14 @@ void OpenWindow() // 開窗
   digitalWrite(RELAY_PIN_OPEN, LOW);
   delay(200);
   digitalWrite(RELAY_PIN_OPEN, HIGH);
-  delay(200);
+  delay(1000);
   digitalWrite(RELAY_PIN_OPEN, LOW);
-  delay(200);
+  delay(3000);
   digitalWrite(RELAY_PIN_OPEN, HIGH);
-  delay(2000);
-  digitalWrite(RELAY_PIN_OPEN, LOW);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
   SendCarPowerMsg(5);
+  is_acting = false;
 }
 
 // 保留原 HTTP 發送功能 (只負責上報狀態，不負責接收命令)
