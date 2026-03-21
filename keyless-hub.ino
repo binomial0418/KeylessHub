@@ -3,6 +3,9 @@
 #include <HTTPClient.h>
 #include <base64.h>
 #include <PubSubClient.h> // 請確認已安裝 PubSubClient Library
+#include <WebServer.h>
+#include <ElegantOTA.h>
+#include <Preferences.h>
 #include "config.h"
 
 // ====== 硬體腳位設定 (保留您的原始設定) ======
@@ -15,9 +18,6 @@
 #define POWER_PIN 26      // 鑰匙電源
 #define R1_PIN 27         // 備用
 
-// ====== OwnTracks/Command 設定 ======
-const char *topic_cmd = "owntracks/" USER_ID "/" DEVICE_ID;
-
 // ====== 全域變數 ======
 int preAct = 0;
 int carBootSts = 0;
@@ -25,9 +25,32 @@ int lastAccState = -1; // 用來偵測 ACC 狀態變化的變數
 int key_link = 0;      // MQTT 控制連動
 bool is_acting = false; // 是否正在執行動作
 
+// --- 新增設定變數 ---
+Preferences preferences;
+String pref_ssid = WIFI_SSID;
+String pref_pass = WIFI_PASSWORD;
+String pref_mqtt_host = MQTT_HOST;
+int pref_mqtt_port = MQTT_PORT;
+String pref_mqtt_user = MQTT_USER;
+String pref_mqtt_pass = MQTT_PASS;
+String pref_user_id = USER_ID;
+String pref_device_id = DEVICE_ID;
+
+// ====== OwnTracks/Command 設定 ======
+String topic_cmd = "owntracks/" + pref_user_id + "/" + pref_device_id;
+
+int open_window_delay = 3000;
+int close_window_delay = 5000;
+
+// --- AP 模式變數 ---
+bool ap_active = false;
+unsigned long ap_start_time = 0;
+const unsigned long AP_TIMEOUT = 10 * 60 * 1000; // 10 分鐘
+
 // MQTT 物件
 WiFiClient espClient;
 PubSubClient client(espClient);
+WebServer server(80);
 
 // 函式宣告
 void setup_wifi();
@@ -42,9 +65,23 @@ void SendCarPowerMsg(int sts);
 void checkPinStates();
 bool checkOpenDoor();
 
+// --- 新增函式宣告 ---
+void startAP();
+void stopAP();
+void handleRoot();
+void handleSave();
+void loadSettings();
+void saveSettings();
+
 void setup()
 {
   Serial.begin(115200);
+
+  // --- 載入設定 ---
+  loadSettings();
+
+  // --- 啟動 AP 模式 (10分鐘) ---
+  startAP();
 
   // --- 腳位設定 ---
   pinMode(checkBluePin, INPUT);
@@ -71,7 +108,7 @@ void setup()
   setup_wifi();
 
   // --- 設定 MQTT ---
-  client.setServer(MQTT_HOST, MQTT_PORT);
+  client.setServer(pref_mqtt_host.c_str(), pref_mqtt_port);
   client.setCallback(callback); // 設定收到訊息的處理函式
 
   // --- [修改 4] MQTT 防斷線機制: KeepAlive ---
@@ -83,6 +120,14 @@ void setup()
 
 void loop()
 {
+  // --- AP 模式處理 ---
+  if (ap_active) {
+    server.handleClient();
+    if (millis() - ap_start_time > AP_TIMEOUT) {
+      stopAP();
+    }
+  }
+
   // --- MQTT 連線維護 ---
   if (!client.connected())
   {
@@ -92,8 +137,8 @@ void loop()
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
-  Serial.print("POWER_PIN state: ");
-  Serial.println(digitalRead(POWER_PIN));
+  // Serial.print("POWER_PIN state: ");
+  // Serial.println(digitalRead(POWER_PIN));
   // 這裡的 delay 雖然短，但在 Modem Sleep 模式下，
   // 只要 CPU 空閒，WiFi 模組就會自動尋找機會關閉射頻省電。
   delay(10);
@@ -147,6 +192,10 @@ void callback(char *topic, byte *payload, unsigned int length)
   else if (msg.indexOf("window_close") != -1)
   {
     closeWindow();
+  }
+  else if (msg.indexOf("wake-ap") != -1)
+  {
+    startAP();
   }
 }
 
@@ -263,10 +312,10 @@ void setup_wifi()
 {
   delay(10);
   Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
+  Serial.println(pref_ssid);
 
-  WiFi.mode(WIFI_STA); // 設定為 Station 模式
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.mode(WIFI_AP_STA); // 設定為 AP+Station 模式，以便同時運行 AP
+  WiFi.begin(pref_ssid.c_str(), pref_pass.c_str());
 
   int iCount = 0;
   while (WiFi.status() != WL_CONNECTED && iCount <= 20)
@@ -313,13 +362,13 @@ void reconnect()
     String clientId = "ESP32-Car-" + String(random(0xffff), HEX);
 
     // 使用設定的帳號密碼連線
-    if (client.connect(clientId.c_str(), MQTT_USER, MQTT_PASS))
+    if (client.connect(clientId.c_str(), pref_mqtt_user.c_str(), pref_mqtt_pass.c_str()))
     {
       Serial.println("connected");
 
       // 連線成功後，重新訂閱命令頻道
-      client.subscribe(topic_cmd);
-      Serial.println("已訂閱頻道: " + String(topic_cmd));
+      client.subscribe(topic_cmd.c_str());
+      Serial.println("已訂閱頻道: " + topic_cmd);
     }
     else
     {
@@ -405,7 +454,7 @@ void closeWindow() // 關窗
   digitalWrite(RELAY_PIN_LOCK, HIGH);
   delay(1000);
   digitalWrite(RELAY_PIN_LOCK, LOW);
-  delay(5000);
+  delay(close_window_delay);
   digitalWrite(RELAY_PIN_LOCK, HIGH);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
@@ -428,7 +477,7 @@ void OpenWindow() // 開窗
   digitalWrite(RELAY_PIN_OPEN, HIGH);
   delay(1000);
   digitalWrite(RELAY_PIN_OPEN, LOW);
-  delay(3000);
+  delay(open_window_delay);
   digitalWrite(RELAY_PIN_OPEN, HIGH);
   delay(200);
   digitalWrite(POWER_PIN, LOW);
@@ -467,4 +516,109 @@ void SendCarPowerMsg(int sts)
     http.end();
     wclient.stop();  // 明確關閉連接
   }
+}
+
+// ------------------ 設定與 AP 模式 ------------------
+
+void loadSettings() {
+  preferences.begin("settings", true);
+  pref_ssid = preferences.getString("ssid", WIFI_SSID);
+  pref_pass = preferences.getString("pass", WIFI_PASSWORD);
+  pref_mqtt_host = preferences.getString("m_host", MQTT_HOST);
+  pref_mqtt_port = preferences.getInt("m_port", MQTT_PORT);
+  pref_mqtt_user = preferences.getString("m_user", MQTT_USER);
+  pref_mqtt_pass = preferences.getString("m_pass", MQTT_PASS);
+  pref_user_id = preferences.getString("u_id", USER_ID);
+  pref_device_id = preferences.getString("d_id", DEVICE_ID);
+  open_window_delay = preferences.getInt("ow_delay", 3000);
+  close_window_delay = preferences.getInt("cw_delay", 5000);
+  preferences.end();
+
+  // 更新 MQTT Topic
+  topic_cmd = "owntracks/" + pref_user_id + "/" + pref_device_id;
+}
+
+void saveSettings() {
+  preferences.begin("settings", false);
+  preferences.putString("ssid", pref_ssid);
+  preferences.putString("pass", pref_pass);
+  preferences.putString("m_host", pref_mqtt_host);
+  preferences.putInt("m_port", pref_mqtt_port);
+  preferences.putString("m_user", pref_mqtt_user);
+  preferences.putString("m_pass", pref_mqtt_pass);
+  preferences.putString("u_id", pref_user_id);
+  preferences.putString("d_id", pref_device_id);
+  preferences.putInt("ow_delay", open_window_delay);
+  preferences.putInt("cw_delay", close_window_delay);
+  preferences.end();
+}
+
+void handleRoot() {
+  String html = "<html><head><meta charset='UTF-8'><title>Keyless Hub 設定</title>";
+  html += "<style>body{font-family:sans-serif;margin:20px;} input{margin-bottom:10px;width:100%;padding:8px;} button{padding:10px;width:100%;background:#007bff;color:white;border:none;cursor:pointer;}</style>";
+  html += "</head><body>";
+  html += "<h1>Keyless Hub 設定</h1>";
+  html += "<form action='/save' method='POST'>";
+  html += "<h3>Wi-Fi 設定</h3>";
+  html += "SSID: <input type='text' name='ssid' value='" + pref_ssid + "'><br>";
+  html += "密碼: <input type='password' name='pass' value='" + pref_pass + "'><br>";
+  
+  html += "<h3>MQTT 設定</h3>";
+  html += "Host: <input type='text' name='m_host' value='" + pref_mqtt_host + "'><br>";
+  html += "Port: <input type='number' name='m_port' value='" + String(pref_mqtt_port) + "'><br>";
+  html += "User: <input type='text' name='m_user' value='" + pref_mqtt_user + "'><br>";
+  html += "Pass: <input type='password' name='m_pass' value='" + pref_mqtt_pass + "'><br>";
+  html += "User ID: <input type='text' name='u_id' value='" + pref_user_id + "'><br>";
+  html += "Device ID: <input type='text' name='d_id' value='" + pref_device_id + "'><br>";
+  
+  html += "<h3>延時設定 (毫秒)</h3>";
+  html += "開窗延時: <input type='number' name='ow_delay' value='" + String(open_window_delay) + "'><br>";
+  html += "關窗延時: <input type='number' name='cw_delay' value='" + String(close_window_delay) + "'><br>";
+  
+  html += "<button type='submit'>儲存並重啟</button>";
+  html += "</form>";
+  html += "<br><hr><h3>韌體更新 (OTA)</h3>";
+  html += "<p><a href='/update'>前往 ElegantOTA 更新頁面</a></p>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleSave() {
+  if (server.hasArg("ssid")) pref_ssid = server.arg("ssid");
+  if (server.hasArg("pass")) pref_pass = server.arg("pass");
+  if (server.hasArg("m_host")) pref_mqtt_host = server.arg("m_host");
+  if (server.hasArg("m_port")) pref_mqtt_port = server.arg("m_port").toInt();
+  if (server.hasArg("m_user")) pref_mqtt_user = server.arg("m_user");
+  if (server.hasArg("m_pass")) pref_mqtt_pass = server.arg("m_pass");
+  if (server.hasArg("u_id")) pref_user_id = server.arg("u_id");
+  if (server.hasArg("d_id")) pref_device_id = server.arg("d_id");
+  if (server.hasArg("ow_delay")) open_window_delay = server.arg("ow_delay").toInt();
+  if (server.hasArg("cw_delay")) close_window_delay = server.arg("cw_delay").toInt();
+  
+  saveSettings();
+  server.send(200, "text/html", "<html><body><h1>設定已儲存，系統即將重啟...</h1><script>setTimeout(function(){location.href='/';}, 3000);</script></body></html>");
+  delay(2000);
+  ESP.restart();
+}
+
+void startAP() {
+  Serial.println("啟動 AP 模式...");
+  WiFi.softAP(AP_SSID, AP_PASS);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP 位址: ");
+  Serial.println(IP);
+  
+  server.on("/", handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  ElegantOTA.begin(&server);
+  server.begin();
+  
+  ap_active = true;
+  ap_start_time = millis();
+}
+
+void stopAP() {
+  Serial.println("關閉 AP 模式...");
+  WiFi.softAPdisconnect(true);
+  ap_active = false;
 }
