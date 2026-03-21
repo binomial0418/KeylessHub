@@ -1,12 +1,13 @@
+#include "config.h"
 #include <Arduino.h>
-#include <WiFi.h>
+#include <ElegantOTA.h>
 #include <HTTPClient.h>
-#include <base64.h>
+#include <Preferences.h>
 #include <PubSubClient.h> // 請確認已安裝 PubSubClient Library
 #include <WebServer.h>
-#include <ElegantOTA.h>
-#include <Preferences.h>
-#include "config.h"
+#include <WebSocketsServer.h> // 請確認已安裝 WebSockets Library
+#include <WiFi.h>
+#include <base64.h>
 
 // ====== 硬體腳位設定 (保留您的原始設定) ======
 #define checkBluePin 34   // 手機藍牙偵測
@@ -21,8 +22,8 @@
 // ====== 全域變數 ======
 int preAct = 0;
 int carBootSts = 0;
-int lastAccState = -1; // 用來偵測 ACC 狀態變化的變數
-int key_link = 0;      // MQTT 控制連動
+int lastAccState = -1;  // 用來偵測 ACC 狀態變化的變數
+int key_link = 0;       // MQTT 控制連動
 bool is_acting = false; // 是否正在執行動作
 
 // --- 新增設定變數 ---
@@ -44,13 +45,17 @@ int close_window_delay = 5000;
 
 // --- AP 模式變數 ---
 bool ap_active = false;
-unsigned long ap_start_time = 0;
-const unsigned long AP_TIMEOUT = 10 * 60 * 1000; // 10 分鐘
+// 移除 AP_TIMEOUT，改為永久開啟
 
 // MQTT 物件
 WiFiClient espClient;
 PubSubClient client(espClient);
 WebServer server(80);
+
+// --- OBD 擴充物件 ---
+WiFiClient obdEspClient;
+PubSubClient obdClient(obdEspClient);
+WebSocketsServer webSocket = WebSocketsServer(81);
 
 // 函式宣告
 void setup_wifi();
@@ -59,11 +64,16 @@ void callback(char *topic, byte *payload, unsigned int length);
 void triggerBoot();
 void unlockDoor();
 void lockDoor();
-void closeWindow(); // 關窗 
+void closeWindow(); // 關窗
 void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
 bool checkOpenDoor();
+
+// --- OBD 擴充功能 ---
+void reconnectOBD();
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload,
+                    size_t length);
 
 // --- 新增函式宣告 ---
 void startAP();
@@ -73,8 +83,7 @@ void handleSave();
 void loadSettings();
 void saveSettings();
 
-void setup()
-{
+void setup() {
   Serial.begin(115200);
 
   // --- 載入設定 ---
@@ -111,6 +120,13 @@ void setup()
   client.setServer(pref_mqtt_host.c_str(), pref_mqtt_port);
   client.setCallback(callback); // 設定收到訊息的處理函式
 
+  // --- 設定 OBD MQTT ---
+  obdClient.setServer(OBD_MQTT_HOST, OBD_MQTT_PORT);
+
+  // --- 設定 WebSocket ---
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
   // --- [修改 4] MQTT 防斷線機制: KeepAlive ---
   // 設定 60 秒發送一次心跳，避免 4G NAT 斷線
   client.setKeepAlive(60);
@@ -118,22 +134,26 @@ void setup()
   Serial.println("系統啟動完成，進入 Modem Sleep 監聽模式");
 }
 
-void loop()
-{
-  // --- AP 模式處理 ---
+void loop() {
+  // --- AP 模式處理 (常駐) ---
   if (ap_active) {
     server.handleClient();
-    if (millis() - ap_start_time > AP_TIMEOUT) {
-      stopAP();
-    }
   }
 
+  // --- WebSocket 處理 ---
+  webSocket.loop();
+
   // --- MQTT 連線維護 ---
-  if (!client.connected())
-  {
+  if (!client.connected()) {
     reconnect();
   }
   client.loop(); // 這裡非常重要！它負責處理 MQTT 訊息接收與心跳包
+
+  // --- OBD MQTT 連線維護 ---
+  if (!obdClient.connected()) {
+    reconnectOBD();
+  }
+  obdClient.loop();
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
@@ -147,102 +167,78 @@ void loop()
 // ------------------ 邏輯功能區 ------------------
 
 // [修改 2] 處理 MQTT 收到的訊息 (取代原本 bootCar 的 HTTP GET)
-void callback(char *topic, byte *payload, unsigned int length)
-{
+void callback(char *topic, byte *payload, unsigned int length) {
   Serial.print("收到指令 [");
   Serial.print(topic);
   Serial.print("]: ");
 
   String msg = "";
-  for (int i = 0; i < length; i++)
-  {
+  for (int i = 0; i < length; i++) {
     msg += (char)payload[i];
   }
   Serial.println(msg);
 
   // 解析mqtt指令
-  if (msg.indexOf("boot") != -1)
-  {
+  if (msg.indexOf("boot") != -1) {
     triggerBoot();
     carBootSts = 1;
     // SendCarPowerMsg(1);
-  }
-  else if (msg.indexOf("lock") != -1 && msg.indexOf("unlock") == -1)
-  {
+  } else if (msg.indexOf("lock") != -1 && msg.indexOf("unlock") == -1) {
     lockDoor();
-  }
-  else if (msg.indexOf("unlock") != -1)
-  {
+  } else if (msg.indexOf("unlock") != -1) {
     unlockDoor();
-  }
-  else if (msg.indexOf("key_on") != -1)
-  {
+  } else if (msg.indexOf("key_on") != -1) {
     key_link = 1;
     Serial.println("key_link set to 1");
-  }
-  else if (msg.indexOf("key_off") != -1)
-  {
+  } else if (msg.indexOf("key_off") != -1) {
     key_link = 0;
     Serial.println("key_link set to 0");
-  }
-  else if (msg.indexOf("window_open") != -1)
-  {
+  } else if (msg.indexOf("window_open") != -1) {
     OpenWindow();
-  }
-  else if (msg.indexOf("window_close") != -1)
-  {
+  } else if (msg.indexOf("window_close") != -1) {
     closeWindow();
-  }
-  else if (msg.indexOf("wake-ap") != -1)
-  {
+  } else if (msg.indexOf("wake-ap") != -1) {
     startAP();
   }
 }
 
 // 綜合狀態檢查函式 (在 loop 中執行)
-void checkPinStates()
-{
+void checkPinStates() {
   int currentAcc = digitalRead(checkAccPin);
   int currentBlue = digitalRead(checkBluePin);
   int currentHuman = digitalRead(checkHumanPin);
-  //藍牙連上時，電池通電
-  if (currentBlue == HIGH)
-  {
+  // 藍牙連上時，電池通電
+  if (currentBlue == HIGH) {
     digitalWrite(R1_PIN, HIGH);
-  }
-  else
-  {
+  } else {
     digitalWrite(R1_PIN, LOW);
   }
 
   // --- [新增] Power Pin 控制邏輯 ---
-  if (!is_acting)
-  {
-    if (currentBlue == HIGH && key_link == 1)
-    {
+  if (!is_acting) {
+    if (currentBlue == HIGH && key_link == 1) {
+      // 當連結key and acc off and 人靠近 and 門沒開時，自動解鎖
+      if (preAct == 0 && currentAcc != HIGH) {
+        unlockDoor();
+        // 避免連續觸發
+        delay(2000);
+      }
       digitalWrite(POWER_PIN, HIGH);
-    }
-    else
-    {
+    } else {
       digitalWrite(POWER_PIN, LOW);
     }
   }
 
   // --- 1. 偵測 ACC 狀態變化 ---
-  if (currentAcc != lastAccState)
-  {
+  if (currentAcc != lastAccState) {
     delay(50); // 去抖動
-    if (digitalRead(checkAccPin) == currentAcc)
-    {
-      if (currentAcc == LOW)
-      {
+    if (digitalRead(checkAccPin) == currentAcc) {
+      if (currentAcc == LOW) {
         // ACC 從 ON 變 OFF
         Serial.println("汽車關閉 (ACC OFF)");
         SendCarPowerMsg(0);
         carBootSts = 0;
-      }
-      else
-      {
+      } else {
         // ACC 從 OFF 變 ON
         Serial.println("汽車發動 (ACC ON)");
         carBootSts = 1;
@@ -252,54 +248,45 @@ void checkPinStates()
     }
   }
 
-  // --- 2. 有藍牙且有人靠近 (開門條件) ---
-  if (currentBlue == HIGH && currentAcc == LOW)
-  {
-    if (checkOpenDoor())
-    {
-      unlockDoor();
-      // 避免連續觸發
-      delay(2000);
-    }
-  }
+  // // --- 2. 有藍牙且有人靠近 (開門條件) ---
+  // if (currentBlue == HIGH && currentAcc == LOW) {
+  //   if (checkOpenDoor()) {
+  //     unlockDoor();
+  //     // 避免連續觸發
+  //     delay(2000);
+  //   }
+  // }
   // --- 3. 自動鎖門邏輯 (無藍牙且原本開門狀態) ---
-  if (currentBlue == LOW && preAct == 1 && currentAcc == LOW)
-  {
-    // 可再嘗試使用 millis() 進行非阻塞式等待優化
-    Serial.println("藍牙中斷，5秒後嘗試鎖門...");
-    delay(5000);
-    // 再次確認藍牙狀態
-    if (digitalRead(checkBluePin) == LOW)
-    {
-      lockDoor();
-    }
-  }
+  // if (currentBlue == LOW && preAct == 1 && currentAcc == LOW) {
+  //   // 可再嘗試使用 millis() 進行非阻塞式等待優化
+  //   Serial.println("藍牙中斷，5秒後嘗試鎖門...");
+  //   delay(5000);
+  //   // 再次確認藍牙狀態
+  //   if (digitalRead(checkBluePin) == LOW) {
+  //     lockDoor();
+  //   }
+  // }
 }
 
 // 開門檢測邏輯
-bool checkOpenDoor()
-{
+bool checkOpenDoor() {
   // 注意：此函式在 loop 中被呼叫，若使用 while 迴圈會暫時卡住 MQTT 接收
   // 但因為這是在確認開門意圖，短暫延遲是可以接受的
 
   const unsigned long checkDuration = 3000; // 3秒檢測
   unsigned long startCheck = millis();
 
-  while (millis() - startCheck < checkDuration)
-  {
+  while (millis() - startCheck < checkDuration) {
     // 隨時保持 MQTT 接收，避免因為卡在這裡 3 秒導致命令延遲
     // client.loop();避免網路在這裡死掉重連，造成等待，下次loop程式會重新處理連線，所以不用在這等待
 
-    if (digitalRead(checkAccPin) == HIGH)
-    {
+    if (digitalRead(checkAccPin) == HIGH) {
       return false;
     }
-    if (digitalRead(checkBluePin) == LOW)
-    {
+    if (digitalRead(checkBluePin) == LOW) {
       return false;
     }
-    if (digitalRead(checkHumanPin) == HIGH)
-    {
+    if (digitalRead(checkHumanPin) == HIGH) {
       Serial.println("GPIO33 HIGH → 觸發開門");
       return true;
     }
@@ -308,8 +295,7 @@ bool checkOpenDoor()
   return false;
 }
 
-void setup_wifi()
-{
+void setup_wifi() {
   delay(10);
   Serial.print("Connecting to ");
   Serial.println(pref_ssid);
@@ -318,15 +304,13 @@ void setup_wifi()
   WiFi.begin(pref_ssid.c_str(), pref_pass.c_str());
 
   int iCount = 0;
-  while (WiFi.status() != WL_CONNECTED && iCount <= 20)
-  {
+  while (WiFi.status() != WL_CONNECTED && iCount <= 20) {
     delay(500);
     Serial.print(".");
     iCount++;
   }
 
-  if (WiFi.status() == WL_CONNECTED)
-  {
+  if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi 連接成功");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
@@ -337,41 +321,34 @@ void setup_wifi()
     WiFi.setSleep(true);
     Serial.println("Modem Sleep 已啟用");
     // =================================================
-  }
-  else
-  {
+  } else {
     Serial.println("\nWiFi 連接失敗，將於 loop 中重試");
   }
 }
 
 // [修改 4] MQTT 斷線重連機制
-void reconnect()
-{
+void reconnect() {
   // 如果 WiFi 斷了，先重連 WiFi
-  if (WiFi.status() != WL_CONNECTED)
-  {
+  if (WiFi.status() != WL_CONNECTED) {
     setup_wifi();
   }
 
   // 檢查 MQTT 是否連線
-  if (!client.connected())
-  {
+  if (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
 
     // 產生隨機 Client ID
     String clientId = "ESP32-Car-" + String(random(0xffff), HEX);
 
     // 使用設定的帳號密碼連線
-    if (client.connect(clientId.c_str(), pref_mqtt_user.c_str(), pref_mqtt_pass.c_str()))
-    {
+    if (client.connect(clientId.c_str(), pref_mqtt_user.c_str(),
+                       pref_mqtt_pass.c_str())) {
       Serial.println("connected");
 
       // 連線成功後，重新訂閱命令頻道
       client.subscribe(topic_cmd.c_str());
       Serial.println("已訂閱頻道: " + topic_cmd);
-    }
-    else
-    {
+    } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
@@ -382,8 +359,7 @@ void reconnect()
 
 // --- 動作執行函式 ---
 
-void triggerBoot()
-{
+void triggerBoot() {
   if (digitalRead(checkAccPin) == HIGH)
     return;
   is_acting = true;
@@ -401,8 +377,7 @@ void triggerBoot()
   is_acting = false;
 }
 
-void unlockDoor()
-{
+void unlockDoor() {
   if (digitalRead(checkAccPin) == HIGH)
     return;
   is_acting = true;
@@ -419,8 +394,7 @@ void unlockDoor()
   is_acting = false;
 }
 
-void lockDoor()
-{
+void lockDoor() {
   // if (digitalRead(checkAccPin) == HIGH || digitalRead(checkBluePin) == HIGH)
   //   return;
   if (digitalRead(checkAccPin) == HIGH)
@@ -446,7 +420,7 @@ void closeWindow() // 關窗
   is_acting = true;
   Serial.println("close window");
   preAct = 0;
-  //按一下鎖門 放開後再按鎖門三秒
+  // 按一下鎖門 放開後再按鎖門三秒
   digitalWrite(POWER_PIN, HIGH);
   delay(100);
   digitalWrite(RELAY_PIN_LOCK, LOW);
@@ -486,10 +460,9 @@ void OpenWindow() // 開窗
 }
 
 // 保留原 HTTP 發送功能 (只負責上報狀態，不負責接收命令)
-void SendCarPowerMsg(int sts)
-{
-  String url = "";  // 初始化為空字串
-  
+void SendCarPowerMsg(int sts) {
+  String url = ""; // 初始化為空字串
+
   // if (sts == 1)
   //   // url = URL_CAR_BOOT;
   //   url = "";
@@ -504,17 +477,16 @@ void SendCarPowerMsg(int sts)
   else if (sts == 5)
     url = URL_OPEN_WINDOW;
   else
-    return;  // 無效的狀態值，直接返回
+    return; // 無效的狀態值，直接返回
 
-  if (WiFi.status() == WL_CONNECTED && url.length() > 0)
-  {
+  if (WiFi.status() == WL_CONNECTED && url.length() > 0) {
     HTTPClient http;
     WiFiClient wclient;
     http.begin(wclient, url);
-    http.setTimeout(5000);  // 設定 5 秒超時
+    http.setTimeout(5000); // 設定 5 秒超時
     int httpCode = http.GET();
     http.end();
-    wclient.stop();  // 明確關閉連接
+    wclient.stop(); // 明確關閉連接
   }
 }
 
@@ -554,27 +526,40 @@ void saveSettings() {
 }
 
 void handleRoot() {
-  String html = "<html><head><meta charset='UTF-8'><title>Keyless Hub 設定</title>";
-  html += "<style>body{font-family:sans-serif;margin:20px;} input{margin-bottom:10px;width:100%;padding:8px;} button{padding:10px;width:100%;background:#007bff;color:white;border:none;cursor:pointer;}</style>";
+  String html =
+      "<html><head><meta charset='UTF-8'><title>Keyless Hub 設定</title>";
+  html += "<style>body{font-family:sans-serif;margin:20px;} "
+          "input{margin-bottom:10px;width:100%;padding:8px;} "
+          "button{padding:10px;width:100%;background:#007bff;color:white;"
+          "border:none;cursor:pointer;}</style>";
   html += "</head><body>";
   html += "<h1>Keyless Hub 設定</h1>";
   html += "<form action='/save' method='POST'>";
   html += "<h3>Wi-Fi 設定</h3>";
   html += "SSID: <input type='text' name='ssid' value='" + pref_ssid + "'><br>";
-  html += "密碼: <input type='password' name='pass' value='" + pref_pass + "'><br>";
-  
+  html +=
+      "密碼: <input type='password' name='pass' value='" + pref_pass + "'><br>";
+
   html += "<h3>MQTT 設定</h3>";
-  html += "Host: <input type='text' name='m_host' value='" + pref_mqtt_host + "'><br>";
-  html += "Port: <input type='number' name='m_port' value='" + String(pref_mqtt_port) + "'><br>";
-  html += "User: <input type='text' name='m_user' value='" + pref_mqtt_user + "'><br>";
-  html += "Pass: <input type='password' name='m_pass' value='" + pref_mqtt_pass + "'><br>";
-  html += "User ID: <input type='text' name='u_id' value='" + pref_user_id + "'><br>";
-  html += "Device ID: <input type='text' name='d_id' value='" + pref_device_id + "'><br>";
-  
+  html += "Host: <input type='text' name='m_host' value='" + pref_mqtt_host +
+          "'><br>";
+  html += "Port: <input type='number' name='m_port' value='" +
+          String(pref_mqtt_port) + "'><br>";
+  html += "User: <input type='text' name='m_user' value='" + pref_mqtt_user +
+          "'><br>";
+  html += "Pass: <input type='password' name='m_pass' value='" +
+          pref_mqtt_pass + "'><br>";
+  html += "User ID: <input type='text' name='u_id' value='" + pref_user_id +
+          "'><br>";
+  html += "Device ID: <input type='text' name='d_id' value='" + pref_device_id +
+          "'><br>";
+
   html += "<h3>延時設定 (毫秒)</h3>";
-  html += "開窗延時: <input type='number' name='ow_delay' value='" + String(open_window_delay) + "'><br>";
-  html += "關窗延時: <input type='number' name='cw_delay' value='" + String(close_window_delay) + "'><br>";
-  
+  html += "開窗延時: <input type='number' name='ow_delay' value='" +
+          String(open_window_delay) + "'><br>";
+  html += "關窗延時: <input type='number' name='cw_delay' value='" +
+          String(close_window_delay) + "'><br>";
+
   html += "<button type='submit'>儲存並重啟</button>";
   html += "</form>";
   html += "<br><hr><h3>韌體更新 (OTA)</h3>";
@@ -584,19 +569,32 @@ void handleRoot() {
 }
 
 void handleSave() {
-  if (server.hasArg("ssid")) pref_ssid = server.arg("ssid");
-  if (server.hasArg("pass")) pref_pass = server.arg("pass");
-  if (server.hasArg("m_host")) pref_mqtt_host = server.arg("m_host");
-  if (server.hasArg("m_port")) pref_mqtt_port = server.arg("m_port").toInt();
-  if (server.hasArg("m_user")) pref_mqtt_user = server.arg("m_user");
-  if (server.hasArg("m_pass")) pref_mqtt_pass = server.arg("m_pass");
-  if (server.hasArg("u_id")) pref_user_id = server.arg("u_id");
-  if (server.hasArg("d_id")) pref_device_id = server.arg("d_id");
-  if (server.hasArg("ow_delay")) open_window_delay = server.arg("ow_delay").toInt();
-  if (server.hasArg("cw_delay")) close_window_delay = server.arg("cw_delay").toInt();
-  
+  if (server.hasArg("ssid"))
+    pref_ssid = server.arg("ssid");
+  if (server.hasArg("pass"))
+    pref_pass = server.arg("pass");
+  if (server.hasArg("m_host"))
+    pref_mqtt_host = server.arg("m_host");
+  if (server.hasArg("m_port"))
+    pref_mqtt_port = server.arg("m_port").toInt();
+  if (server.hasArg("m_user"))
+    pref_mqtt_user = server.arg("m_user");
+  if (server.hasArg("m_pass"))
+    pref_mqtt_pass = server.arg("m_pass");
+  if (server.hasArg("u_id"))
+    pref_user_id = server.arg("u_id");
+  if (server.hasArg("d_id"))
+    pref_device_id = server.arg("d_id");
+  if (server.hasArg("ow_delay"))
+    open_window_delay = server.arg("ow_delay").toInt();
+  if (server.hasArg("cw_delay"))
+    close_window_delay = server.arg("cw_delay").toInt();
+
   saveSettings();
-  server.send(200, "text/html", "<html><body><h1>設定已儲存，系統即將重啟...</h1><script>setTimeout(function(){location.href='/';}, 3000);</script></body></html>");
+  server.send(200, "text/html",
+              "<html><body><h1>設定已儲存，系統即將重啟...</"
+              "h1><script>setTimeout(function(){location.href='/';}, "
+              "3000);</script></body></html>");
   delay(2000);
   ESP.restart();
 }
@@ -607,18 +605,64 @@ void startAP() {
   IPAddress IP = WiFi.softAPIP();
   Serial.print("AP IP 位址: ");
   Serial.println(IP);
-  
+
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   ElegantOTA.begin(&server);
   server.begin();
-  
+
   ap_active = true;
-  ap_start_time = millis();
 }
 
 void stopAP() {
   Serial.println("關閉 AP 模式...");
   WiFi.softAPdisconnect(true);
   ap_active = false;
+}
+
+// ================== OBD 擴充功能實作 ==================
+
+void reconnectOBD() {
+  static unsigned long lastRetry = 0;
+  if (millis() - lastRetry < 5000)
+    return; // 每 5 秒嘗試一次，非阻塞
+  lastRetry = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("嘗試連接 OBD MQTT...");
+    String clientId = "ESP32-OBD-" + String(random(0xffff), HEX);
+    if (obdClient.connect(clientId.c_str(), OBD_MQTT_USER, OBD_MQTT_PASS)) {
+      Serial.println("OBD MQTT 已連線");
+    } else {
+      Serial.print("OBD MQTT 連線失敗, rc=");
+      Serial.println(obdClient.state());
+    }
+  }
+}
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload,
+                    size_t length) {
+  switch (type) {
+  case WStype_DISCONNECTED:
+    Serial.printf("[%u] WebSocket 中斷連線\n", num);
+    break;
+  case WStype_CONNECTED: {
+    IPAddress ip = webSocket.remoteIP(num);
+    Serial.printf("[%u] WebSocket 已連線，來自 %s\n", num,
+                  ip.toString().c_str());
+    break;
+  }
+  case WStype_TEXT:
+    Serial.printf("[%u] 收到 WebSocket 數據: %s\n", num, payload);
+    // 將收到的文字轉發至 OBD MQTT Topic
+    if (obdClient.connected()) {
+      obdClient.publish(OBD_MQTT_TOPIC, (const char *)payload);
+      Serial.println("數據已轉發至 OBD MQTT");
+    } else {
+      Serial.println("OBD MQTT 未連線，無法轉發數據");
+    }
+    break;
+  default:
+    break;
+  }
 }
