@@ -20,6 +20,10 @@
   - `key_on`：啟用鑰匙連結，實現真正免帶鑰匙
   - `key_off`：停用鑰匙連結
   
+- **OBD 數據轉發**：
+  - **WebSocket Server**：開啟於 Port 81，接收本地數據輸入。
+  - **MQTT 轉發**：將收到的數據轉發至獨立的 OBD MQTT 頻道（owntracks/mt/obd）。
+  - **獨立運作**：使用獨立的 MQTT 客戶端，確保數據傳輸不影響核心車控功能。
 - **本地智能感測**：
   - ACC 狀態監測（發動/熄火檢測）
   - 藍牙連接狀態檢測
@@ -75,6 +79,8 @@
 | `closeWindow()` | 執行關窗流程（模擬長按鎖門） |
 | `OpenWindow()` | 執行開窗流程（模擬長按開門） |
 | `SendCarPowerMsg()` | 透過 HTTP GET 上報狀態至伺服器 |
+| `reconnectOBD()` | OBD MQTT 斷線重連機制（每 5 秒嘗試一次，非阻塞） |
+| `webSocketEvent()` | 處理 WebSocket 連線、斷線及收到數據後的 MQTT 轉發 |
 
 ## 程式運作流程
 
@@ -296,6 +302,11 @@ arduino-cli monitor -p /dev/cu.usbserial-14120 -c baudrate=115200
 - **開門邏輯**：需同時滿足藍牙連接、ACC 關閉、人體靠近（GPIO 33 在 3 秒內觸發）。
 - **鎖門邏輯**：藍牙斷開後等待 5 秒，再次確認藍牙離開後執行鎖門動作。
 
+### OBD 數據轉發機制
+- **WebSocket 接收**：監聽 Port 81，接收來自本地裝置（如平板或手機）的原始 OBD 數據。
+- **異步轉發**：所有接收到的數據會立即透過 `obdClient` 發布至雲端 MQTT，實現遠端監控。
+- **穩定性**：具備獨立的連線維護機制 (`reconnectOBD`)，即使 OBD MQTT 斷線也補會影響主要車控邏輯。
+
 ### 繼電器控制
 - 所有繼電器高電位為關閉，低電位為啟動。
 - 每個動作完成後恢復初始狀態。
@@ -344,5 +355,10 @@ Attempting MQTT connection...connected
 - ✅ 提取配置到獨立 `config.h`
 - ✅ 實現 Modem Sleep 省電模式
 - ✅ MQTT 防斷線機制（KeepAlive）
-- ✅ 完整的 GPIO 狀態檢查邏輯
+- ✅ 關鍵動作流程完成
 - ✅ 自動化開門/鎖門邏輯
+
+### v10（當前版本）
+- ✅ 新增 WebSocket Server (Port 81)
+- ✅ 實現獨立的 OBD 數據 MQTT 轉發機制
+- ✅ 強化 MQTT 連線穩定性與非阻塞重連
