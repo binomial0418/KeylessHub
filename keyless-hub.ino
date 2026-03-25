@@ -24,7 +24,8 @@ int preAct = 0;
 int carBootSts = 0;
 int lastAccState = -1;  // 用來偵測 ACC 狀態變化的變數
 int key_link = 0;       // MQTT 控制連動
-bool is_acting = false; // 是否正在執行動作
+bool is_acting = false;          // 是否正在執行動作
+bool autoUnlockTriggered = false; // 本次連線是否已自動解鎖過
 
 // --- 新增設定變數 ---
 Preferences preferences;
@@ -218,13 +219,18 @@ void checkPinStates() {
   if (!is_acting) {
     if (currentBlue == HIGH && key_link == 1) {
       // 當連結key and acc off and 人靠近 and 門沒開時，自動解鎖
-      if (preAct == 0 && currentAcc != HIGH) {
+      if (preAct == 0 && currentAcc != HIGH && !autoUnlockTriggered) {
         unlockDoor();
+        autoUnlockTriggered = true;
         // 避免連續觸發
         delay(2000);
       }
       digitalWrite(POWER_PIN, HIGH);
     } else {
+      // BT 斷線或 key_link 關閉，重置自動解鎖旗標
+      if (currentBlue == LOW || key_link == 0) {
+        autoUnlockTriggered = false;
+      }
       digitalWrite(POWER_PIN, LOW);
     }
   }
