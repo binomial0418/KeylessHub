@@ -22,7 +22,8 @@
 // ====== 全域變數 ======
 int preAct = 0;
 int carBootSts = 0;
-int lastAccState = -1;  // 用來偵測 ACC 狀態變化的變數
+int lastAccState = -1;   // 用來偵測 ACC 狀態變化的變數
+int lastBlueState = -1;  // 用來偵測藍牙狀態變化的變數（debounce 用）
 int key_link = 0;       // MQTT 控制連動
 bool is_acting = false;          // 是否正在執行動作
 bool autoUnlockTriggered = false; // 本次連線是否已自動解鎖過
@@ -215,10 +216,32 @@ void checkPinStates() {
     digitalWrite(R1_PIN, LOW);
   }
 
+  // --- 藍牙 HIGH→LOW 邊緣偵測（含 debounce）---
+  if (currentBlue != lastBlueState) {
+    delay(50); // 去抖動
+    if (digitalRead(checkBluePin) == currentBlue) {
+      // 確認為 HIGH→LOW 真實斷線
+      if (lastBlueState == HIGH && currentBlue == LOW) {
+        Serial.println("藍牙斷線確認");
+        // 若曾自動解鎖過，無論 key_link 狀態，一律自動鎖門
+        if (autoUnlockTriggered) {
+          Serial.println("藍牙斷線，自動鎖門...");
+          lockDoor();
+        }
+        // 只有自動解鎖才重置 preAct，手動解鎖的狀態保留（preAct=1 會阻止下次連線再次自動解鎖）
+        if (autoUnlockTriggered) {
+          preAct = 0;
+        }
+        autoUnlockTriggered = false;
+      }
+      lastBlueState = currentBlue;
+    }
+  }
+
   // --- [新增] Power Pin 控制邏輯 ---
   if (!is_acting) {
     if (currentBlue == HIGH && key_link == 1) {
-      // 當連結key and acc off and 人靠近 and 門沒開時，自動解鎖
+      // 當連結key and acc off and 門沒開時，自動解鎖
       if (preAct == 0 && currentAcc != HIGH && !autoUnlockTriggered) {
         unlockDoor();
         autoUnlockTriggered = true;
@@ -227,8 +250,10 @@ void checkPinStates() {
       }
       digitalWrite(POWER_PIN, HIGH);
     } else {
-      // BT 斷線或 key_link 關閉，重置自動解鎖旗標
-      if (currentBlue == LOW || key_link == 0) {
+      if (key_link == 0) {
+        if (autoUnlockTriggered) {
+          preAct = 0;
+        }
         autoUnlockTriggered = false;
       }
       digitalWrite(POWER_PIN, LOW);
