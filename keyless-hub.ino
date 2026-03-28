@@ -12,7 +12,6 @@
 // ====== 硬體腳位設定 (保留您的原始設定) ======
 #define checkBluePin 34   // 手機藍牙偵測
 #define checkAccPin 35    // 汽車 ACC 偵測
-#define checkHumanPin 33  // 人體/敲擊偵測
 #define RELAY_PIN_LOCK 5  // 鎖門
 #define RELAY_PIN_BOOT 4  // 發車
 #define RELAY_PIN_OPEN 15 // 開門
@@ -21,7 +20,6 @@
 
 // ====== 全域變數 ======
 int preAct = 0;
-int carBootSts = 0;
 int lastAccState = -1;   // 用來偵測 ACC 狀態變化的變數
 int lastBlueState = -1;  // 用來偵測藍牙狀態變化的變數（debounce 用）
 int key_link = 0;       // MQTT 控制連動
@@ -70,7 +68,6 @@ void closeWindow(); // 關窗
 void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
-bool checkOpenDoor();
 
 // --- OBD 擴充功能 ---
 void reconnectOBD();
@@ -79,7 +76,6 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload,
 
 // --- 新增函式宣告 ---
 void startAP();
-void stopAP();
 void handleRoot();
 void handleSave();
 void loadSettings();
@@ -97,7 +93,6 @@ void setup() {
   // --- 腳位設定 ---
   pinMode(checkBluePin, INPUT);
   pinMode(checkAccPin, INPUT);
-  pinMode(checkHumanPin, INPUT_PULLDOWN);
   pinMode(RELAY_PIN_OPEN, OUTPUT);
   pinMode(RELAY_PIN_LOCK, OUTPUT);
   pinMode(RELAY_PIN_BOOT, OUTPUT);
@@ -113,7 +108,6 @@ void setup() {
 
   // --- 初始化 ACC 狀態 ---
   lastAccState = digitalRead(checkAccPin);
-  carBootSts = (lastAccState == HIGH) ? 1 : 0;
 
   // --- 連接 WiFi ---
   setup_wifi();
@@ -183,8 +177,6 @@ void callback(char *topic, byte *payload, unsigned int length) {
   // 解析mqtt指令
   if (msg.indexOf("boot") != -1) {
     triggerBoot();
-    carBootSts = 1;
-    // SendCarPowerMsg(1);
   } else if (msg.indexOf("lock") != -1 && msg.indexOf("unlock") == -1) {
     lockDoor();
   } else if (msg.indexOf("unlock") != -1) {
@@ -208,7 +200,6 @@ void callback(char *topic, byte *payload, unsigned int length) {
 void checkPinStates() {
   int currentAcc = digitalRead(checkAccPin);
   int currentBlue = digitalRead(checkBluePin);
-  int currentHuman = digitalRead(checkHumanPin);
   // 藍牙連上時，電池通電
   if (currentBlue == HIGH) {
     digitalWrite(R1_PIN, HIGH);
@@ -223,16 +214,12 @@ void checkPinStates() {
       // 確認為 HIGH→LOW 真實斷線
       if (lastBlueState == HIGH && currentBlue == LOW) {
         Serial.println("藍牙斷線確認");
-        // 若曾自動解鎖過，無論 key_link 狀態，一律自動鎖門
         if (autoUnlockTriggered) {
           Serial.println("藍牙斷線，自動鎖門...");
           lockDoor();
-        }
-        // 只有自動解鎖才重置 preAct，手動解鎖的狀態保留（preAct=1 會阻止下次連線再次自動解鎖）
-        if (autoUnlockTriggered) {
           preAct = 0;
+          autoUnlockTriggered = false;
         }
-        autoUnlockTriggered = false;
       }
       lastBlueState = currentBlue;
     }
@@ -268,62 +255,14 @@ void checkPinStates() {
         // ACC 從 ON 變 OFF
         Serial.println("汽車關閉 (ACC OFF)");
         SendCarPowerMsg(0);
-        carBootSts = 0;
       } else {
         // ACC 從 OFF 變 ON
         Serial.println("汽車發動 (ACC ON)");
-        carBootSts = 1;
-        // SendCarPowerMsg(1);
       }
       lastAccState = currentAcc;
     }
   }
 
-  // // --- 2. 有藍牙且有人靠近 (開門條件) ---
-  // if (currentBlue == HIGH && currentAcc == LOW) {
-  //   if (checkOpenDoor()) {
-  //     unlockDoor();
-  //     // 避免連續觸發
-  //     delay(2000);
-  //   }
-  // }
-  // --- 3. 自動鎖門邏輯 (無藍牙且原本開門狀態) ---
-  // if (currentBlue == LOW && preAct == 1 && currentAcc == LOW) {
-  //   // 可再嘗試使用 millis() 進行非阻塞式等待優化
-  //   Serial.println("藍牙中斷，5秒後嘗試鎖門...");
-  //   delay(5000);
-  //   // 再次確認藍牙狀態
-  //   if (digitalRead(checkBluePin) == LOW) {
-  //     lockDoor();
-  //   }
-  // }
-}
-
-// 開門檢測邏輯
-bool checkOpenDoor() {
-  // 注意：此函式在 loop 中被呼叫，若使用 while 迴圈會暫時卡住 MQTT 接收
-  // 但因為這是在確認開門意圖，短暫延遲是可以接受的
-
-  const unsigned long checkDuration = 3000; // 3秒檢測
-  unsigned long startCheck = millis();
-
-  while (millis() - startCheck < checkDuration) {
-    // 隨時保持 MQTT 接收，避免因為卡在這裡 3 秒導致命令延遲
-    // client.loop();避免網路在這裡死掉重連，造成等待，下次loop程式會重新處理連線，所以不用在這等待
-
-    if (digitalRead(checkAccPin) == HIGH) {
-      return false;
-    }
-    if (digitalRead(checkBluePin) == LOW) {
-      return false;
-    }
-    if (digitalRead(checkHumanPin) == HIGH) {
-      Serial.println("GPIO33 HIGH → 觸發開門");
-      return true;
-    }
-    delay(100);
-  }
-  return false;
 }
 
 void setup_wifi() {
@@ -643,12 +582,6 @@ void startAP() {
   server.begin();
 
   ap_active = true;
-}
-
-void stopAP() {
-  Serial.println("關閉 AP 模式...");
-  WiFi.softAPdisconnect(true);
-  ap_active = false;
 }
 
 // ================== OBD 擴充功能實作 ==================

@@ -3,139 +3,853 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32 車載系統運作流程圖 (Final Fix)</title>
-    <!-- 使用最新的 Mermaid 版本 -->
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    <title>Keyless Hub - 系統流程圖與狀態機分析</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <style>
-        body {
-            font-family: "Microsoft JhengHei", Arial, sans-serif;
-            background-color: #f4f7f6;
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --surface2: #334155;
+            --border: #475569;
+            --text: #e2e8f0;
+            --text-dim: #94a3b8;
+            --accent: #38bdf8;
+            --green: #4ade80;
+            --red: #f87171;
+            --yellow: #fbbf24;
+            --purple: #c084fc;
+            --orange: #fb923c;
         }
-        h2 { color: #333; margin-bottom: 20px; }
-        .chart-container {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            width: 100%;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Microsoft JhengHei", "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(15, 23, 42, 0.92);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+        }
+        nav ul {
+            display: flex; list-style: none; gap: 0.25rem;
+            max-width: 1200px; margin: 0 auto;
             overflow-x: auto;
+        }
+        nav a {
+            display: block; padding: 0.75rem 1rem;
+            color: var(--text-dim); text-decoration: none;
+            font-size: 0.85rem; white-space: nowrap;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        nav a:hover, nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        /* Layout */
+        .container { max-width: 1200px; margin: 0 auto; padding: 4.5rem 1.5rem 3rem; }
+        section { margin-bottom: 3rem; scroll-margin-top: 4rem; }
+
+        h1 {
+            font-size: 1.75rem; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            margin-bottom: 0.25rem;
+        }
+        .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 2rem; }
+        h2 {
+            font-size: 1.25rem; font-weight: 600; color: var(--accent);
+            margin-bottom: 1rem; padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--surface2);
+        }
+        h3 { font-size: 1rem; color: var(--text); margin: 1.25rem 0 0.75rem; }
+
+        /* Cards */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--surface2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card:hover { border-color: var(--border); }
+
+        /* Mermaid */
+        .mermaid-wrap {
+            background: #fff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            overflow-x: auto;
+        }
+        .mermaid { text-align: center; }
+
+        /* Tables */
+        table {
+            width: 100%; border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        th {
+            background: var(--surface2);
+            color: var(--accent);
+            font-weight: 600;
+            text-align: left;
+            padding: 0.6rem 0.75rem;
+            position: sticky; top: 0;
+        }
+        td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--surface2);
+            vertical-align: top;
+        }
+        tr:hover td { background: rgba(56, 189, 248, 0.04); }
+        code {
+            background: var(--surface2); padding: 0.15em 0.4em;
+            border-radius: 4px; font-size: 0.82em; color: var(--green);
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block; padding: 0.15em 0.5em;
+            border-radius: 4px; font-size: 0.75rem; font-weight: 600;
+        }
+        .badge-green  { background: rgba(74,222,128,0.15); color: var(--green); }
+        .badge-red    { background: rgba(248,113,113,0.15); color: var(--red); }
+        .badge-yellow { background: rgba(251,191,36,0.15);  color: var(--yellow); }
+        .badge-purple { background: rgba(192,132,252,0.15); color: var(--purple); }
+        .badge-blue   { background: rgba(56,189,248,0.15);  color: var(--accent); }
+        .badge-orange { background: rgba(251,146,60,0.15);  color: var(--orange); }
+
+        /* GPIO diagram */
+        .gpio-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 0.75rem;
+        }
+        .gpio-item {
+            background: var(--surface2);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .gpio-pin {
+            font-size: 1.1rem; font-weight: 700;
+            min-width: 50px; text-align: center;
+            padding: 0.25rem; border-radius: 6px;
+        }
+        .gpio-in  .gpio-pin { background: rgba(56,189,248,0.2);  color: var(--accent); }
+        .gpio-out .gpio-pin { background: rgba(251,146,60,0.2); color: var(--orange); }
+        .gpio-label { font-size: 0.82rem; }
+        .gpio-label span { display: block; color: var(--text-dim); font-size: 0.75rem; }
+
+        /* Timeline */
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute; left: 0.5rem; top: 0; bottom: 0;
+            width: 2px; background: var(--surface2);
+        }
+        .timeline-step {
+            position: relative;
+            margin-bottom: 1rem;
+            padding: 0.75rem 1rem;
+            background: var(--surface2);
+            border-radius: 8px;
+        }
+        .timeline-step::before {
+            content: '';
+            position: absolute; left: -1.65rem; top: 1rem;
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: 2px solid var(--bg);
+        }
+        .timeline-step .step-label {
+            font-size: 0.75rem; color: var(--text-dim);
+        }
+        .timeline-step .step-code {
+            font-family: monospace; color: var(--green); font-size: 0.82rem;
+        }
+        .timeline-step.relay::before { background: var(--orange); }
+        .timeline-step.wait::before  { background: var(--yellow); }
+
+        @media (max-width: 768px) {
+            nav ul { gap: 0; }
+            nav a { padding: 0.75rem 0.6rem; font-size: 0.78rem; }
+            .container { padding: 4rem 1rem 2rem; }
+            .gpio-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
-    <h2>ESP32 MQTT 車載系統邏輯流程圖</h2>
-    
-    <div class="chart-container">
-        <div class="mermaid">
-        flowchart TD
-            %% 定義樣式
-            classDef default fill:#fff,stroke:#333,stroke-width:1px;
-            classDef init fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-            classDef loop fill:#fff8e1,stroke:#fbc02d,stroke-width:2px;
-            classDef mqtt fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
-            classDef hard fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-            classDef action fill:#ffebee,stroke:#c62828,stroke-width:2px;
+<nav>
+    <ul>
+        <li><a href="#overview">總覽</a></li>
+        <li><a href="#gpio">GPIO</a></li>
+        <li><a href="#startup">啟動流程</a></li>
+        <li><a href="#mainloop">主循環</a></li>
+        <li><a href="#pinlogic">GPIO 邏輯</a></li>
+        <li><a href="#mqtt-cmd">MQTT 指令</a></li>
+        <li><a href="#actions">動作時序</a></li>
+        <li><a href="#statemachine">狀態機</a></li>
+        <li><a href="#http">HTTP 上報</a></li>
+        <li><a href="#obd">OBD 轉發</a></li>
+    </ul>
+</nav>
 
-            %% 系統初始化
-            subgraph SetupPhase ["系統初始化 (Setup)"]
-                Start(("系統啟動")):::init
-                InitIO["初始化 GPIO"]:::init
-                WifiSleep["設定 WiFi.setSleep(true)"]:::init
-                ConnWifi["連接 Wi-Fi"]:::init
-                ConnMQTT["連接 MQTT Broker"]:::init
-                SubCmd["訂閱 owntracks/mt/cmd"]:::init
-                
-                Start --> InitIO --> WifiSleep --> ConnWifi --> ConnMQTT --> SubCmd
-            end
+<div class="container">
 
-            %% 主循環
-            subgraph MainLoop ["主循環 (Loop)"]
-                LoopStart{"Loop 開始"}:::loop
-                
-                %% MQTT 區塊
-                CheckMQTT{"MQTT 連線?"}:::mqtt
-                Reconn["執行 Reconnect"]:::mqtt
-                MQTTRun["client.loop()"]:::mqtt
-                
-                %% 硬體檢查
-                CheckPins["checkPinStates"]:::hard
-                
-                %% ACC 邏輯
-                ACCChange{"ACC 狀態變化?"}:::hard
-                AccOn["回報: 發動"]:::action
-                AccOff["回報: 熄火"]:::action
-                
-                %% 開門邏輯
-                CondUnlock{"條件: 藍牙+人體+ACC關"}:::hard
-                DoUnlock["執行 unlockDoor"]:::action
-                
-                %% 鎖門邏輯
-                CondLock{"條件: 藍牙離+已開+ACC關"}:::hard
-                WaitLock["等待 5 秒"]:::hard
-                CheckBlue{"藍牙仍離開?"}:::hard
-                DoLock["執行 lockDoor"]:::action
-                
-                LoopEnd["Delay 10ms"]:::loop
-            end
-            
-            %% MQTT Callback
-            subgraph Callback ["接收指令 (Callback)"]
-                MsgIn[/"收到 MQTT 指令"/]:::mqtt
-                Parse{"解析內容"}:::mqtt
-                ActBoot["觸發發動 (Boot)"]:::action
-                ActLock["觸發鎖門 (Lock)"]:::action
-                ActUnlock["觸發開門 (Unlock)"]:::action
-            end
+    <!-- Header -->
+    <h1>Keyless Hub - 系統架構文件</h1>
+    <p class="subtitle">ESP32 車載智慧控制系統 &mdash; 程式邏輯流程圖與狀態機分析</p>
 
-            %% 流程連接
-            SubCmd --> LoopStart
-            LoopStart --> CheckMQTT
-            
-            CheckMQTT -- "否" --> Reconn
-            Reconn --> MQTTRun
-            CheckMQTT -- "是" --> MQTTRun
-            
-            MQTTRun --> CheckPins
-            CheckPins --> ACCChange
-            
-            ACCChange -- "變 ON" --> AccOn
-            ACCChange -- "變 OFF" --> AccOff
-            ACCChange -- "無" --> CondUnlock
-            
-            AccOn --> CondUnlock
-            AccOff --> CondUnlock
-            
-            CondUnlock -- "是" --> DoUnlock
-            CondUnlock -- "否" --> CondLock
-            DoUnlock --> CondLock
-            
-            CondLock -- "是" --> WaitLock
-            WaitLock --> CheckBlue
-            CheckBlue -- "是" --> DoLock
-            CheckBlue -- "否" --> LoopEnd
-            
-            CondLock -- "否" --> LoopEnd
-            DoLock --> LoopEnd
-            
-            LoopEnd --> LoopStart
+    <!-- 1. Overview -->
+    <section id="overview">
+        <h2>1. 系統總覽</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+block-beta
+    columns 3
+    space:3
+    block:inputs:1
+        columns 1
+        BT["BT 偵測\nGPIO 34"]
+        ACC["ACC 偵測\nGPIO 35"]
+    end
+    block:core:1
+        columns 1
+        ESP["ESP32\nkeyless-hub"]
+    end
+    block:outputs:1
+        columns 1
+        LOCK["鎖門 Relay\nGPIO 5"]
+        OPEN["解鎖 Relay\nGPIO 15"]
+        BOOT["發車 Relay\nGPIO 4"]
+        PWR["鑰匙電源\nGPIO 26"]
+        R1["備用電源\nGPIO 27"]
+    end
+    space:3
+    block:net:3
+        columns 4
+        WIFI["WiFi STA"]
+        MQTT["主 MQTT\n車輛指令"]
+        OBD_MQTT["OBD MQTT\n行車數據"]
+        WS["WebSocket:81\nOBD 資料入口"]
+    end
 
-            %% Callback 連接
-            MQTTRun -.-> MsgIn
-            MsgIn --> Parse
-            Parse -- "boot" --> ActBoot
-            Parse -- "lock" --> ActLock
-            Parse -- "unlock" --> ActUnlock
+    BT --> ESP
+    ACC --> ESP
+    ESP --> LOCK
+    ESP --> OPEN
+    ESP --> BOOT
+    ESP --> PWR
+    ESP --> R1
+    ESP --> WIFI
+    WIFI --> MQTT
+    WIFI --> OBD_MQTT
+    WS --> OBD_MQTT
+
+    style ESP fill:#1e40af,color:#fff,stroke:#3b82f6
+    style MQTT fill:#7c3aed,color:#fff,stroke:#a78bfa
+    style OBD_MQTT fill:#7c3aed,color:#fff,stroke:#a78bfa
+    style WS fill:#0d9488,color:#fff,stroke:#2dd4bf
+                </pre>
+            </div>
         </div>
-    </div>
+    </section>
 
-    <script>
-        mermaid.initialize({ startOnLoad: true });
-    </script>
+    <!-- 2. GPIO -->
+    <section id="gpio">
+        <h2>2. GPIO 腳位配置</h2>
+        <div class="card">
+            <h3>輸入腳位</h3>
+            <div class="gpio-grid" style="margin-bottom:1rem">
+                <div class="gpio-item gpio-in">
+                    <div class="gpio-pin">34</div>
+                    <div class="gpio-label">藍牙偵測 <span>HIGH = 已連線</span></div>
+                </div>
+                <div class="gpio-item gpio-in">
+                    <div class="gpio-pin">35</div>
+                    <div class="gpio-label">ACC / 點火偵測 <span>HIGH = 引擎啟動</span></div>
+                </div>
+            </div>
+            <h3>輸出腳位</h3>
+            <div class="gpio-grid">
+                <div class="gpio-item gpio-out">
+                    <div class="gpio-pin">5</div>
+                    <div class="gpio-label">鎖門 Relay <span>Active LOW</span></div>
+                </div>
+                <div class="gpio-item gpio-out">
+                    <div class="gpio-pin">15</div>
+                    <div class="gpio-label">解鎖 Relay <span>Active LOW</span></div>
+                </div>
+                <div class="gpio-item gpio-out">
+                    <div class="gpio-pin">4</div>
+                    <div class="gpio-label">發車 Relay <span>Active LOW</span></div>
+                </div>
+                <div class="gpio-item gpio-out">
+                    <div class="gpio-pin">26</div>
+                    <div class="gpio-label">鑰匙電源 (POWER) <span>HIGH = 通電</span></div>
+                </div>
+                <div class="gpio-item gpio-out">
+                    <div class="gpio-pin">27</div>
+                    <div class="gpio-label">備用電源 (R1) <span>BT 連線時通電</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 3. Startup Flow -->
+    <section id="startup">
+        <h2>3. 系統啟動流程 (setup)</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+flowchart TD
+    classDef init fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef ok fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef fail fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef proc fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+
+    A(("ESP32 上電")):::init
+    B["loadSettings()&#10;從 Flash 讀取設定"]:::proc
+    C["startAP()&#10;開啟 AP + WebServer:80&#10;+ ElegantOTA"]:::proc
+    D["GPIO 初始化&#10;Relay = HIGH (關)&#10;POWER/R1 = LOW"]:::proc
+    E["讀取 ACC 初始值&#10;lastAccState = digitalRead"]:::proc
+    F["setup_wifi()&#10;WiFi AP+STA 模式"]:::proc
+    G{"WiFi 連線?"}
+    H["Modem Sleep ON&#10;WiFi.setSleep(true)"]:::ok
+    I["連線失敗&#10;loop 中繼續重試"]:::fail
+    J["MQTT 設定&#10;setServer / setCallback&#10;setKeepAlive(60s)"]:::proc
+    K["OBD MQTT 設定"]:::proc
+    L["WebSocket:81 啟動"]:::proc
+    M["進入 Main Loop"]:::ok
+
+    A --> B --> C --> D --> E --> F --> G
+    G -- "成功" --> H --> J
+    G -- "失敗 >10s" --> I --> J
+    J --> K --> L --> M
+                </pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4. Main Loop -->
+    <section id="mainloop">
+        <h2>4. 主循環 (loop) - 每 10ms</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+flowchart TD
+    classDef net fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
+    classDef hw fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef loop fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+
+    START(("loop()")):::loop
+    AP{"AP 模式\n啟用?"}
+    AP_H["server.handleClient()"]:::net
+    WS["webSocket.loop()"]:::net
+    MQ{"主 MQTT\n已連線?"}
+    MQ_R["reconnect()"]:::net
+    MQ_L["client.loop()&#10;處理訊息 + 心跳"]:::net
+    OBD{"OBD MQTT\n已連線?"}
+    OBD_R["reconnectOBD()&#10;非阻塞 5s retry"]:::net
+    OBD_L["obdClient.loop()"]:::net
+    PIN["checkPinStates()&#10;GPIO 邏輯核心"]:::hw
+    DELAY["delay(10ms)&#10;省電等待"]:::loop
+    END(("回到 loop")):::loop
+
+    START --> AP
+    AP -- "是" --> AP_H --> WS
+    AP -- "否" --> WS
+    WS --> MQ
+    MQ -- "否" --> MQ_R --> MQ_L
+    MQ -- "是" --> MQ_L
+    MQ_L --> OBD
+    OBD -- "否" --> OBD_R --> OBD_L
+    OBD -- "是" --> OBD_L
+    OBD_L --> PIN --> DELAY --> END
+                </pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- 5. checkPinStates -->
+    <section id="pinlogic">
+        <h2>5. checkPinStates() - GPIO 核心邏輯</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+flowchart TD
+    classDef read fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef action fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef check fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef ok fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+
+    READ["讀取 GPIO&#10;currentAcc / currentBlue"]:::read
+
+    subgraph R1 ["R1 備用電源控制"]
+        R1C{"BT HIGH?"}:::check
+        R1H["R1_PIN = HIGH"]:::ok
+        R1L["R1_PIN = LOW"]:::action
+        R1C -- "是" --> R1H
+        R1C -- "否" --> R1L
+    end
+
+    subgraph BT_DEB ["藍牙斷線偵測 (含 50ms debounce)"]
+        BD1{"BT 狀態&#10;改變?"}:::check
+        BD2["delay(50ms) 去抖動"]
+        BD3{"確認&#10;HIGH→LOW?"}:::check
+        BD4{"曾自動&#10;解鎖?"}:::check
+        BD5["lockDoor()&#10;preAct=0&#10;autoUnlockTriggered=false"]:::action
+        BD6["更新 lastBlueState"]:::ok
+        BD1 -- "否" --> PWR_START
+        BD1 -- "是" --> BD2 --> BD3
+        BD3 -- "否 / LOW→HIGH" --> BD6
+        BD3 -- "是" --> BD4
+        BD4 -- "是" --> BD5 --> BD6
+        BD4 -- "否" --> BD6
+        BD6 --> PWR_START
+    end
+
+    subgraph PWR ["POWER_PIN 控制 + 自動解鎖"]
+        PWR_START{"is_acting?"}:::check
+        PWR_SKIP["跳過 (動作中)"]
+        PWR_BK{"BT=HIGH&#10;且&#10;key_link=1?"}:::check
+        PWR_AUTO{"preAct=0&#10;ACC≠HIGH&#10;!autoUnlock?"}:::check
+        PWR_UNLOCK["unlockDoor()&#10;autoUnlockTriggered=true&#10;delay(2s)"]:::action
+        PWR_HIGH["POWER_PIN = HIGH"]:::ok
+        PWR_OFF{"key_link=0?"}:::check
+        PWR_RESET["重置 preAct=0&#10;autoUnlockTriggered=false"]:::action
+        PWR_LOW["POWER_PIN = LOW"]:::action
+
+        PWR_START -- "是" --> PWR_SKIP
+        PWR_START -- "否" --> PWR_BK
+        PWR_BK -- "是" --> PWR_AUTO
+        PWR_AUTO -- "是" --> PWR_UNLOCK --> PWR_HIGH
+        PWR_AUTO -- "否" --> PWR_HIGH
+        PWR_BK -- "否" --> PWR_OFF
+        PWR_OFF -- "是" --> PWR_RESET --> PWR_LOW
+        PWR_OFF -- "否" --> PWR_LOW
+    end
+
+    subgraph ACC_DET ["ACC 狀態邊緣偵測 (含 50ms debounce)"]
+        AD1{"ACC 狀態&#10;改變?"}:::check
+        AD2["delay(50ms) 去抖動"]
+        AD3{"新狀態?"}:::check
+        AD_OFF["ACC OFF&#10;SendCarPowerMsg(0)"]:::action
+        AD_ON["ACC ON&#10;Serial print"]:::ok
+        AD4["更新 lastAccState"]:::ok
+        AD1 -- "否" --> DONE
+        AD1 -- "是" --> AD2 --> AD3
+        AD3 -- "LOW" --> AD_OFF --> AD4
+        AD3 -- "HIGH" --> AD_ON --> AD4
+        AD4 --> DONE
+    end
+
+    DONE(("結束")):::ok
+
+    READ --> R1
+    R1H --> BD1
+    R1L --> BD1
+    PWR_SKIP --> AD1
+    PWR_HIGH --> AD1
+    PWR_LOW --> AD1
+                </pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- 6. MQTT Commands -->
+    <section id="mqtt-cmd">
+        <h2>6. MQTT 指令對應表 (callback)</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+flowchart LR
+    classDef cmd fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
+    classDef act fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef flag fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+
+    MSG[/"MQTT 訊息&#10;owntracks/{user}/{device}"/]:::cmd
+    P{"解析指令"}:::cmd
+    A1["triggerBoot()"]:::act
+    A2["lockDoor()"]:::act
+    A3["unlockDoor()"]:::act
+    A4["key_link = 1"]:::flag
+    A5["key_link = 0"]:::flag
+    A6["OpenWindow()"]:::act
+    A7["closeWindow()"]:::act
+    A8["startAP()"]:::flag
+
+    MSG --> P
+    P -- "boot" --> A1
+    P -- "lock" --> A2
+    P -- "unlock" --> A3
+    P -- "key_on" --> A4
+    P -- "key_off" --> A5
+    P -- "window_open" --> A6
+    P -- "window_close" --> A7
+    P -- "wake-ap" --> A8
+                </pre>
+            </div>
+            <div style="overflow-x:auto; margin-top:1rem;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>MQTT 指令</th>
+                            <th>前提條件</th>
+                            <th>GPIO 輸出</th>
+                            <th>副作用</th>
+                            <th>HTTP 上報</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>boot</code></td>
+                            <td>ACC == LOW</td>
+                            <td>POWER &rarr; LOCK 脈衝 &rarr; BOOT 3s</td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                        </tr>
+                        <tr>
+                            <td><code>unlock</code></td>
+                            <td>ACC == LOW</td>
+                            <td>POWER &rarr; OPEN 脈衝 200ms</td>
+                            <td><code>preAct = 1</code></td>
+                            <td><span class="badge badge-green">sts=3</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>lock</code></td>
+                            <td>ACC == LOW</td>
+                            <td>POWER &rarr; LOCK 脈衝 200ms</td>
+                            <td><code>preAct = 0</code></td>
+                            <td><span class="badge badge-red">sts=2</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>key_on</code></td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td><code>key_link = 1</code></td>
+                            <td>&mdash;</td>
+                        </tr>
+                        <tr>
+                            <td><code>key_off</code></td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td><code>key_link = 0</code></td>
+                            <td>&mdash;</td>
+                        </tr>
+                        <tr>
+                            <td><code>window_open</code></td>
+                            <td>ACC == LOW</td>
+                            <td>POWER &rarr; OPEN 脈衝 &rarr; OPEN 長按</td>
+                            <td><code>preAct = 0</code></td>
+                            <td><span class="badge badge-blue">sts=5</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>window_close</code></td>
+                            <td>ACC == LOW</td>
+                            <td>POWER &rarr; LOCK 脈衝 &rarr; LOCK 長按</td>
+                            <td><code>preAct = 0</code></td>
+                            <td><span class="badge badge-purple">sts=4</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>wake-ap</code></td>
+                            <td>&mdash;</td>
+                            <td>&mdash;</td>
+                            <td>啟動 AP 模式</td>
+                            <td>&mdash;</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- 7. Action Timelines -->
+    <section id="actions">
+        <h2>7. 動作執行時序</h2>
+        <div class="card">
+            <h3>triggerBoot() - 引擎啟動</h3>
+            <div class="timeline">
+                <div class="timeline-step"><span class="step-label">Guard</span><br><span class="step-code">if ACC==HIGH → return</span></div>
+                <div class="timeline-step"><span class="step-label">Flag</span><br><span class="step-code">is_acting = true</span></div>
+                <div class="timeline-step relay"><span class="step-label">+0ms</span><br><span class="step-code">POWER_PIN = HIGH</span></div>
+                <div class="timeline-step wait"><span class="step-label">+100ms</span><br><span class="step-code">RELAY_LOCK = LOW (觸發)</span></div>
+                <div class="timeline-step relay"><span class="step-label">+500ms</span><br><span class="step-code">RELAY_LOCK = HIGH (釋放)</span></div>
+                <div class="timeline-step wait"><span class="step-label">+800ms</span><br><span class="step-code">RELAY_BOOT = LOW (啟動馬達)</span></div>
+                <div class="timeline-step relay"><span class="step-label">+3800ms</span><br><span class="step-code">RELAY_BOOT = HIGH, POWER = LOW</span></div>
+                <div class="timeline-step"><span class="step-label">Done</span><br><span class="step-code">is_acting = false</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>unlockDoor() - 解鎖</h3>
+            <div class="timeline">
+                <div class="timeline-step"><span class="step-label">Guard</span><br><span class="step-code">if ACC==HIGH → return</span></div>
+                <div class="timeline-step"><span class="step-label">Flag</span><br><span class="step-code">is_acting=true, preAct=1</span></div>
+                <div class="timeline-step relay"><span class="step-label">+0ms</span><br><span class="step-code">POWER_PIN = HIGH</span></div>
+                <div class="timeline-step wait"><span class="step-label">+100ms</span><br><span class="step-code">RELAY_OPEN = LOW</span></div>
+                <div class="timeline-step relay"><span class="step-label">+300ms</span><br><span class="step-code">RELAY_OPEN = HIGH</span></div>
+                <div class="timeline-step relay"><span class="step-label">+400ms</span><br><span class="step-code">POWER_PIN = LOW</span></div>
+                <div class="timeline-step"><span class="step-label">HTTP</span><br><span class="step-code">SendCarPowerMsg(3)</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>lockDoor() - 鎖門</h3>
+            <div class="timeline">
+                <div class="timeline-step"><span class="step-label">Guard</span><br><span class="step-code">if ACC==HIGH → return</span></div>
+                <div class="timeline-step"><span class="step-label">Flag</span><br><span class="step-code">is_acting=true, preAct=0</span></div>
+                <div class="timeline-step relay"><span class="step-label">+0ms</span><br><span class="step-code">POWER_PIN = HIGH</span></div>
+                <div class="timeline-step wait"><span class="step-label">+100ms</span><br><span class="step-code">RELAY_LOCK = LOW</span></div>
+                <div class="timeline-step relay"><span class="step-label">+300ms</span><br><span class="step-code">RELAY_LOCK = HIGH</span></div>
+                <div class="timeline-step relay"><span class="step-label">+400ms</span><br><span class="step-code">POWER_PIN = LOW</span></div>
+                <div class="timeline-step"><span class="step-label">HTTP</span><br><span class="step-code">SendCarPowerMsg(2)</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>closeWindow() / OpenWindow() - 車窗控制</h3>
+            <div class="timeline">
+                <div class="timeline-step"><span class="step-label">Guard</span><br><span class="step-code">if ACC==HIGH → return</span></div>
+                <div class="timeline-step relay"><span class="step-label">第一段</span><br><span class="step-code">POWER ON → Relay 脈衝 200ms (觸發短按)</span></div>
+                <div class="timeline-step wait"><span class="step-label">間隔</span><br><span class="step-code">delay(1000ms)</span></div>
+                <div class="timeline-step relay"><span class="step-label">第二段</span><br><span class="step-code">Relay 長按 (關窗: close_window_delay / 開窗: open_window_delay)</span></div>
+                <div class="timeline-step"><span class="step-label">HTTP</span><br><span class="step-code">關窗 → sts=4 / 開窗 → sts=5</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 8. State Machine -->
+    <section id="statemachine">
+        <h2>8. 狀態機分析</h2>
+        <div class="card">
+            <h3>核心狀態變數</h3>
+            <div style="overflow-x:auto">
+                <table>
+                    <thead>
+                        <tr><th>變數</th><th>類型</th><th>初始值</th><th>意義</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>preAct</code></td><td>int</td><td>0</td><td>門是否已解鎖 (1=已解鎖, 0=未解鎖/已鎖)</td></tr>
+                        <tr><td><code>autoUnlockTriggered</code></td><td>bool</td><td>false</td><td>本次 BT 連線週期是否已自動解鎖</td></tr>
+                        <tr><td><code>is_acting</code></td><td>bool</td><td>false</td><td>繼電器動作進行中 (鎖定 POWER_PIN 控制)</td></tr>
+                        <tr><td><code>key_link</code></td><td>int</td><td>0</td><td>MQTT key 連動模式 (1=啟用自動解鎖)</td></tr>
+                        <tr><td><code>lastBlueState</code></td><td>int</td><td>-1</td><td>藍牙前一狀態 (debounce 用)</td></tr>
+                        <tr><td><code>lastAccState</code></td><td>int</td><td>讀取值</td><td>ACC 前一狀態 (debounce 用)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <h3>自動解鎖/鎖門 狀態轉移圖</h3>
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+stateDiagram-v2
+    [*] --> 待機: 開機
+
+    待機 --> 已解鎖: BT=HIGH + key_link=1\n+ ACC=LOW + preAct=0\n→ unlockDoor()
+
+    已解鎖 --> 已解鎖: BT 維持 HIGH\nPOWER_PIN 持續供電
+
+    已解鎖 --> 待機: BT HIGH→LOW 斷線\n→ lockDoor() + 重置
+
+    已解鎖 --> 待機: MQTT key_off\n→ 重置 flag + POWER LOW
+
+    待機 --> 待機: BT=LOW 或 key_link=0\n保持待機
+
+    note right of 已解鎖
+        autoUnlockTriggered = true
+        preAct = 1
+        POWER_PIN = HIGH
+    end note
+
+    note right of 待機
+        autoUnlockTriggered = false
+        preAct = 0
+        POWER_PIN = LOW
+    end note
+                </pre>
+            </div>
+        </div>
+        <div class="card">
+            <h3>完整狀態轉移表</h3>
+            <div style="overflow-x:auto">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>當前狀態</th>
+                            <th>BT</th>
+                            <th>ACC</th>
+                            <th>key_link</th>
+                            <th>preAct</th>
+                            <th>autoUnlock</th>
+                            <th>觸發事件</th>
+                            <th>動作</th>
+                            <th>次態</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="badge badge-yellow">待機</span></td>
+                            <td>LOW</td><td>any</td><td>any</td><td>any</td><td>false</td>
+                            <td>&mdash;</td><td>&mdash;</td>
+                            <td><span class="badge badge-yellow">待機</span></td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge badge-yellow">待機</span></td>
+                            <td>HIGH</td><td>LOW</td><td>1</td><td>0</td><td>false</td>
+                            <td>條件齊備</td>
+                            <td><span class="badge badge-green">unlockDoor()</span></td>
+                            <td><span class="badge badge-blue">已解鎖</span></td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge badge-blue">已解鎖</span></td>
+                            <td>HIGH</td><td>LOW</td><td>1</td><td>1</td><td>true</td>
+                            <td>維持連線</td>
+                            <td>POWER_PIN HIGH</td>
+                            <td><span class="badge badge-blue">已解鎖</span></td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge badge-blue">已解鎖</span></td>
+                            <td>HIGH&rarr;LOW</td><td>&mdash;</td><td>&mdash;</td><td>1</td><td>true</td>
+                            <td>BT 斷線確認</td>
+                            <td><span class="badge badge-red">lockDoor()</span> + 重置</td>
+                            <td><span class="badge badge-yellow">待機</span></td>
+                        </tr>
+                        <tr>
+                            <td><span class="badge badge-blue">已解鎖</span></td>
+                            <td>&mdash;</td><td>&mdash;</td><td>0</td><td>1</td><td>true</td>
+                            <td>MQTT key_off</td>
+                            <td>preAct=0, flag=false, POWER LOW</td>
+                            <td><span class="badge badge-yellow">待機</span></td>
+                        </tr>
+                        <tr>
+                            <td>任意</td>
+                            <td>any</td><td>HIGH</td><td>any</td><td>any</td><td>any</td>
+                            <td>ACC ON</td>
+                            <td>所有動作函式 return</td>
+                            <td><span class="badge badge-orange">不動作</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <h3>安全聯鎖保護機制</h3>
+            <div style="overflow-x:auto">
+                <table>
+                    <thead><tr><th>機制</th><th>保護目的</th><th>實作方式</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td><code>ACC == HIGH → return</code></td>
+                            <td>引擎運行中禁止所有繼電器操作</td>
+                            <td>所有動作函式開頭檢查</td>
+                        </tr>
+                        <tr>
+                            <td><code>is_acting</code> flag</td>
+                            <td>防止動作執行中被 GPIO 邏輯干擾</td>
+                            <td>POWER_PIN 控制區塊跳過</td>
+                        </tr>
+                        <tr>
+                            <td><code>autoUnlockTriggered</code></td>
+                            <td>每次 BT 連線只自動解鎖一次</td>
+                            <td>解鎖後設 true, BT 斷線時重置</td>
+                        </tr>
+                        <tr>
+                            <td>50ms debounce</td>
+                            <td>避免 GPIO 雜訊造成誤判</td>
+                            <td>BT / ACC 邊緣偵測前 delay + 二次確認</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- 9. HTTP -->
+    <section id="http">
+        <h2>9. HTTP 狀態上報碼</h2>
+        <div class="card">
+            <div style="overflow-x:auto">
+                <table>
+                    <thead><tr><th>sts</th><th>事件</th><th>URL 常數</th><th>觸發點</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="badge badge-red">0</span></td><td>引擎關閉 (ACC OFF)</td><td><code>URL_CAR_SHUTDOWN</code></td><td>ACC 邊緣偵測</td></tr>
+                        <tr><td><span class="badge badge-red">2</span></td><td>鎖門完成</td><td><code>URL_LOCK_DOOR</code></td><td>lockDoor()</td></tr>
+                        <tr><td><span class="badge badge-green">3</span></td><td>解鎖完成</td><td><code>URL_OPEN_DOOR</code></td><td>unlockDoor()</td></tr>
+                        <tr><td><span class="badge badge-purple">4</span></td><td>關窗完成</td><td><code>URL_CLOSE_WINDOW</code></td><td>closeWindow()</td></tr>
+                        <tr><td><span class="badge badge-blue">5</span></td><td>開窗完成</td><td><code>URL_OPEN_WINDOW</code></td><td>OpenWindow()</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- 10. OBD -->
+    <section id="obd">
+        <h2>10. OBD 資料轉發流程</h2>
+        <div class="card">
+            <div class="mermaid-wrap">
+                <pre class="mermaid">
+sequenceDiagram
+    participant Device as OBD 裝置
+    participant WS as WebSocket:81
+    participant ESP as ESP32
+    participant MQTT as OBD MQTT Broker
+
+    Device->>WS: 連線 (WStype_CONNECTED)
+    Note over WS,ESP: 記錄來源 IP
+
+    loop 持續傳送
+        Device->>WS: 傳送 OBD 數據 (WStype_TEXT)
+        WS->>ESP: 觸發 webSocketEvent
+        alt OBD MQTT 已連線
+            ESP->>MQTT: publish(OBD_MQTT_TOPIC, data)
+            Note over MQTT: 數據已轉發
+        else OBD MQTT 未連線
+            Note over ESP: 丟棄，Serial 印出警告
+        end
+    end
+
+    Device->>WS: 斷線 (WStype_DISCONNECTED)
+                </pre>
+            </div>
+        </div>
+    </section>
+
+</div>
+
+<script>
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: 'default',
+        flowchart: { curve: 'basis', useMaxWidth: true },
+        sequence: { useMaxWidth: true }
+    });
+
+    // Nav active state
+    const sections = document.querySelectorAll('section');
+    const navLinks = document.querySelectorAll('nav a');
+    window.addEventListener('scroll', () => {
+        let current = '';
+        sections.forEach(s => {
+            if (window.scrollY >= s.offsetTop - 80) current = s.id;
+        });
+        navLinks.forEach(a => {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+        });
+    });
+</script>
+
 </body>
 </html>
