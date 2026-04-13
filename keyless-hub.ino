@@ -5,7 +5,7 @@
 #include <Preferences.h>
 #include <PubSubClient.h> // 請確認已安裝 PubSubClient Library
 #include <WebServer.h>
-#include <WebSocketsServer.h> // 請確認已安裝 WebSockets Library
+
 #include <WiFi.h>
 #include <base64.h>
 
@@ -44,18 +44,17 @@ int open_window_delay = 3000;
 int close_window_delay = 5000;
 
 // --- AP 模式變數 ---
+#define AP_TIMEOUT 600000 // 10分鐘 (毫秒)
 bool ap_active = false;
-// 移除 AP_TIMEOUT，改為永久開啟
+unsigned long apStartTime = 0;
+// AP_TIMEOUT 屆滿後自動關閉
 
 // MQTT 物件
 WiFiClient espClient;
 PubSubClient client(espClient);
 WebServer server(80);
 
-// --- OBD 擴充物件 ---
-WiFiClient obdEspClient;
-PubSubClient obdClient(obdEspClient);
-WebSocketsServer webSocket = WebSocketsServer(81);
+
 
 // 函式宣告
 void setup_wifi();
@@ -69,10 +68,7 @@ void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
 
-// --- OBD 擴充功能 ---
-void reconnectOBD();
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload,
-                    size_t length);
+
 
 // --- 新增函式宣告 ---
 void startAP();
@@ -116,12 +112,9 @@ void setup() {
   client.setServer(pref_mqtt_host.c_str(), pref_mqtt_port);
   client.setCallback(callback); // 設定收到訊息的處理函式
 
-  // --- 設定 OBD MQTT ---
-  obdClient.setServer(OBD_MQTT_HOST, OBD_MQTT_PORT);
 
-  // --- 設定 WebSocket ---
-  webSocket.begin();
-  webSocket.onEvent(webSocketEvent);
+
+
 
   // --- [修改 4] MQTT 防斷線機制: KeepAlive ---
   // 設定 60 秒發送一次心跳，避免 4G NAT 斷線
@@ -131,13 +124,18 @@ void setup() {
 }
 
 void loop() {
-  // --- AP 模式處理 (常駐) ---
+  // --- AP 模式處理 ---
   if (ap_active) {
     server.handleClient();
+    // 檢查是否逾時需關閉 AP
+    if (millis() - apStartTime > AP_TIMEOUT) {
+      Serial.println("AP 模式逾時，自動關閉...");
+      WiFi.softAPdisconnect(true);
+      ap_active = false;
+    }
   }
 
-  // --- WebSocket 處理 ---
-  webSocket.loop();
+
 
   // --- MQTT 連線維護 ---
   if (!client.connected()) {
@@ -145,11 +143,7 @@ void loop() {
   }
   client.loop(); // 這裡非常重要！它負責處理 MQTT 訊息接收與心跳包
 
-  // --- OBD MQTT 連線維護 ---
-  if (!obdClient.connected()) {
-    reconnectOBD();
-  }
-  obdClient.loop();
+
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
@@ -581,52 +575,6 @@ void startAP() {
   ElegantOTA.begin(&server);
   server.begin();
 
+  apStartTime = millis();
   ap_active = true;
-}
-
-// ================== OBD 擴充功能實作 ==================
-
-void reconnectOBD() {
-  static unsigned long lastRetry = 0;
-  if (millis() - lastRetry < 5000)
-    return; // 每 5 秒嘗試一次，非阻塞
-  lastRetry = millis();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("嘗試連接 OBD MQTT...");
-    String clientId = "ESP32-OBD-" + String(random(0xffff), HEX);
-    if (obdClient.connect(clientId.c_str(), OBD_MQTT_USER, OBD_MQTT_PASS)) {
-      Serial.println("OBD MQTT 已連線");
-    } else {
-      Serial.print("OBD MQTT 連線失敗, rc=");
-      Serial.println(obdClient.state());
-    }
-  }
-}
-
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload,
-                    size_t length) {
-  switch (type) {
-  case WStype_DISCONNECTED:
-    Serial.printf("[%u] WebSocket 中斷連線\n", num);
-    break;
-  case WStype_CONNECTED: {
-    IPAddress ip = webSocket.remoteIP(num);
-    Serial.printf("[%u] WebSocket 已連線，來自 %s\n", num,
-                  ip.toString().c_str());
-    break;
-  }
-  case WStype_TEXT:
-    Serial.printf("[%u] 收到 WebSocket 數據: %s\n", num, payload);
-    // 將收到的文字轉發至 OBD MQTT Topic
-    if (obdClient.connected()) {
-      obdClient.publish(OBD_MQTT_TOPIC, (const char *)payload);
-      Serial.println("數據已轉發至 OBD MQTT");
-    } else {
-      Serial.println("OBD MQTT 未連線，無法轉發數據");
-    }
-    break;
-  default:
-    break;
-  }
 }
