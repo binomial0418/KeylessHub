@@ -12,19 +12,26 @@
 // ====== 硬體腳位設定 (保留您的原始設定) ======
 #define checkBluePin 34   // 手機藍牙偵測
 #define checkAccPin 35    // 汽車 ACC 偵測
-#define RELAY_PIN_LOCK 5  // 鎖門
-#define RELAY_PIN_BOOT 4  // 發車
-#define RELAY_PIN_OPEN 15 // 開門
+#define RELAY_PIN_LOCK 18 // 鎖門（避開 strapping 腳位）
+#define RELAY_PIN_BOOT 19 // 發車（避開 strapping 腳位）
+#define RELAY_PIN_OPEN 23 // 開門（避開 strapping 腳位）
 #define POWER_PIN 26      // 鑰匙電源
 #define R1_PIN 27         // 備用
 
 // ====== 全域變數 ======
 int preAct = 0;
-int lastAccState = -1;   // 用來偵測 ACC 狀態變化的變數
-int lastBlueState = -1;  // 用來偵測藍牙狀態變化的變數（debounce 用）
-int key_link = 0;       // MQTT 控制連動
-bool is_acting = false;          // 是否正在執行動作
+int lastAccState = -1;            // 用來偵測 ACC 狀態變化的變數
+int lastBlueState = -1;           // 用來偵測藍牙狀態變化的變數（debounce 用）
+int key_link = 0;                 // MQTT 控制連動
+bool is_acting = false;           // 是否正在執行動作
 bool autoUnlockTriggered = false; // 本次連線是否已自動解鎖過
+unsigned long blueHighSince = 0;  // 藍牙維持 HIGH 的起始時間
+unsigned long lastAutoUnlockAt = 0;
+unsigned long lastAutoLockAt = 0;
+
+const unsigned long BLUE_STABLE_MS = 1500UL;            // 藍牙需穩定 HIGH 1.5 秒
+const unsigned long AUTO_LOCK_COOLDOWN_MS = 5000UL;     // 自動解鎖後至少 5 秒才可自動鎖門
+const unsigned long AUTO_UNLOCK_COOLDOWN_MS = 5000UL;   // 自動鎖門後至少 5 秒才可自動解鎖
 
 // --- 新增設定變數 ---
 Preferences preferences;
@@ -47,14 +54,14 @@ int close_window_delay = 5000;
 #define AP_TIMEOUT 600000 // 10分鐘 (毫秒)
 bool ap_active = false;
 unsigned long apStartTime = 0;
+unsigned long lastAutoResetAt = 0;
+const unsigned long AUTO_RESET_INTERVAL_MS = 3600000UL; // 1 小時
 // AP_TIMEOUT 屆滿後自動關閉
 
 // MQTT 物件
 WiFiClient espClient;
 PubSubClient client(espClient);
 WebServer server(80);
-
-
 
 // 函式宣告
 void setup_wifi();
@@ -67,8 +74,6 @@ void closeWindow(); // 關窗
 void OpenWindow();  // 開窗
 void SendCarPowerMsg(int sts);
 void checkPinStates();
-
-
 
 // --- 新增函式宣告 ---
 void startAP();
@@ -104,6 +109,10 @@ void setup() {
 
   // --- 初始化 ACC 狀態 ---
   lastAccState = digitalRead(checkAccPin);
+  lastBlueState = digitalRead(checkBluePin);
+  if (lastBlueState == HIGH) {
+    blueHighSince = millis();
+  }
 
   // --- 連接 WiFi ---
   setup_wifi();
@@ -112,18 +121,24 @@ void setup() {
   client.setServer(pref_mqtt_host.c_str(), pref_mqtt_port);
   client.setCallback(callback); // 設定收到訊息的處理函式
 
-
-
-
-
   // --- [修改 4] MQTT 防斷線機制: KeepAlive ---
   // 設定 60 秒發送一次心跳，避免 4G NAT 斷線
   client.setKeepAlive(60);
+
+  // 1 小時自動重啟計時起點
+  lastAutoResetAt = millis();
 
   Serial.println("系統啟動完成，進入 Modem Sleep 監聽模式");
 }
 
 void loop() {
+  // --- 每 1 小時自動重啟 ---
+  if (millis() - lastAutoResetAt >= AUTO_RESET_INTERVAL_MS) {
+    Serial.println("到達 1 小時，自動重啟裝置...");
+    delay(50); // 讓序列訊息有機會送出
+    ESP.restart();
+  }
+
   // --- AP 模式處理 ---
   if (ap_active) {
     server.handleClient();
@@ -135,15 +150,11 @@ void loop() {
     }
   }
 
-
-
   // --- MQTT 連線維護 ---
   if (!client.connected()) {
     reconnect();
   }
   client.loop(); // 這裡非常重要！它負責處理 MQTT 訊息接收與心跳包
-
-
 
   // ---  處理腳位邏輯 ---
   checkPinStates();
@@ -192,6 +203,7 @@ void callback(char *topic, byte *payload, unsigned int length) {
 
 // 綜合狀態檢查函式 (在 loop 中執行)
 void checkPinStates() {
+  unsigned long now = millis();
   int currentAcc = digitalRead(checkAccPin);
   int currentBlue = digitalRead(checkBluePin);
   // 藍牙連上時，電池通電
@@ -208,12 +220,18 @@ void checkPinStates() {
       // 確認為 HIGH→LOW 真實斷線
       if (lastBlueState == HIGH && currentBlue == LOW) {
         Serial.println("藍牙斷線確認");
-        if (autoUnlockTriggered) {
+        if (autoUnlockTriggered && (now - lastAutoUnlockAt >= AUTO_LOCK_COOLDOWN_MS)) {
           Serial.println("藍牙斷線，自動鎖門...");
           lockDoor();
+          lastAutoLockAt = millis();
           preAct = 0;
           autoUnlockTriggered = false;
+        } else if (autoUnlockTriggered) {
+          Serial.println("略過自動鎖門：仍在自動解鎖冷卻時間內");
         }
+        blueHighSince = 0;
+      } else if (lastBlueState == LOW && currentBlue == HIGH) {
+        blueHighSince = now;
       }
       lastBlueState = currentBlue;
     }
@@ -223,8 +241,11 @@ void checkPinStates() {
   if (!is_acting) {
     if (currentBlue == HIGH && key_link == 1) {
       // 當連結key and acc off and 門沒開時，自動解鎖
-      if (preAct == 0 && currentAcc != HIGH && !autoUnlockTriggered) {
+      if (preAct == 0 && currentAcc != HIGH && !autoUnlockTriggered &&
+          blueHighSince > 0 && (now - blueHighSince >= BLUE_STABLE_MS) &&
+          (now - lastAutoLockAt >= AUTO_UNLOCK_COOLDOWN_MS)) {
         unlockDoor();
+        lastAutoUnlockAt = millis();
         autoUnlockTriggered = true;
         // 避免連續觸發
         delay(2000);
@@ -256,7 +277,6 @@ void checkPinStates() {
       lastAccState = currentAcc;
     }
   }
-
 }
 
 void setup_wifi() {
